@@ -1,0 +1,53 @@
+{
+  "agentName": "git_sync_agent",
+  "sessions": [
+    {
+      "id": "session_git_1",
+      "startTime": "2023-11-02T09:00:00.000Z",
+      "endTime": "2023-11-02T09:05:00.000Z",
+      "actions": [
+        {
+          "title": "סנכרון Git",
+          "description": "ביצוע סנכרון עם רפוזיטורי GitHub",
+          "timestamp": "2023-11-02T09:00:10.000Z",
+          "params": {
+            "projectPath": "projects/sportAi"
+          },
+          "result": {
+            "success": true,
+            "changes": {
+              "pulled": 2,
+              "added": 3,
+              "modified": 1
+            },
+            "commitMessage": "נוספו 3 קבצים חדשים"
+          }
+        },
+        {
+          "title": "עדכון התצורה",
+          "description": "עדכון הגדרות משתמש Git",
+          "timestamp": "2023-11-02T09:02:00.000Z",
+          "params": {
+            "username": "tuvalsss",
+            "email": "tuvalsmail@gmail.com"
+          },
+          "result": {
+            "success": true,
+            "configUpdated": true
+          }
+        }
+      ],
+      "completed": true,
+      "summary": {
+        "description": "סנכרון מוצלח של הפרויקט עם GitHub",
+        "filesChanged": 4,
+        "commitsPushed": 1
+      }
+    }
+  ],
+  "lastUpdated": "2023-11-02T09:05:00.000Z",
+  "stats": {
+    "totalSessions": 1,
+    "totalActions": 2
+  }
+} 

@@ -1,0 +1,130 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* גוף האתר */
+body {
+  background-color: black;
+  color: #e0e0e0;
+  font-family: 'Roboto Mono', monospace;
+  overflow-x: hidden;
+}
+
+/* רקע גלקסיה נע */
+@keyframes moveStars {
+  from { background-position: 0 0; }
+  to { background-position: 1000px 1000px; }
+}
+
+.galaxy-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: url("./galaxy.gif") repeat;
+  background-size: cover;
+  opacity: 0.2;
+  animation: moveStars 60s linear infinite;
+  z-index: -1;
+}
+
+/* כפתור כללי */
+.btn {
+  background: linear-gradient(90deg, #06b6d4, #9333ea);
+  color: white;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-weight: bold;
+  transition: all 0.3s ease-in-out;
+  cursor: pointer;
+}
+.btn:hover {
+  transform: scale(1.05);
+  background: linear-gradient(90deg, #9333ea, #06b6d4);
+}
+
+/* כפתורי פעולה (הפעל/כבה) */
+.btn-action {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: bold;
+  transition: transform 0.2s ease, background 0.2s ease;
+  cursor: pointer;
+}
+.btn-action:hover {
+  transform: scale(1.05);
+}
+
+/* כרטיסיות של סוכנים */
+.agent-card {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 20px;
+  border-radius: 10px;
+  box-shadow: 0 0 15px rgba(0, 255, 255, 0.05);
+  transition: transform 0.2s ease-in-out;
+}
+.agent-card:hover {
+  transform: scale(1.02);
+}
+
+/* פס התקדמות */
+.progress-bar {
+  background: rgba(255, 255, 255, 0.1);
+  height: 8px;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.progress-bar-inner {
+  height: 100%;
+  background: linear-gradient(90deg, #06b6d4, #9333ea);
+  transition: width 0.5s ease-in-out;
+}
+
+/* לוגים */
+.log-box {
+  background-color: #000;
+  padding: 1rem;
+  border-radius: 8px;
+  height: 250px;
+  overflow-y: auto;
+  font-size: 0.85rem;
+  color: #d1d5db;
+  scrollbar-width: thin;
+  scrollbar-color: #6b7280 #1f2937;
+}
+
+/* סטטוס של סוכן */
+.status-dot {
+  height: 10px;
+  width: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+.status-dot.active {
+  background-color: #22c55e;
+}
+.status-dot.inactive {
+  background-color: #ef4444;
+}
+
+/* פאנל כללי */
+.dashboard-panel {
+  background: rgba(31, 41, 55, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  box-shadow: 0 0 15px rgba(0, 255, 255, 0.05);
+  padding: 20px;
+  backdrop-filter: blur(10px);
+}
+
+/* אפקט טעינה */
+.loading {
+  animation: blink 1s infinite alternate;
+}
+@keyframes blink {
+  from { opacity: 0.3; }
+  to { opacity: 1; }
+}
