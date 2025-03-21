@@ -47,13 +47,14 @@ const registerAgents = async () => {
   const qaAgent = require('./agents/qa');
   const executorAgent = require('./agents/executor');
   const gitSyncAgent = require('./agents/git_sync');
-  const summaryAgent = require('./agents/summary_agent');
+  // שימוש בסוכן הסיכום שכבר יובא בראש הקובץ
+  // const summaryAgent = require('./agents/summary_agent');
 
   // רישום סוכן התזמון החדש
   agentManager.registerAgent('scheduler', schedulerAgent);
   
-  // רישום סוכן הסיכום
-  agentManager.registerAgent('summary', summaryAgent);
+  // רישום סוכן הסיכום - השם חייב להתאים למה שמוגדר בקובץ summary.js
+  agentManager.registerAgent('summary_agent', summaryAgent);
 
   // ... existing code ...
 };
@@ -251,10 +252,41 @@ app.post('/agent-action', async (req, res) => {
 app.get('/projects', async (req, res) => {
   try {
     const projects = await projectManager.getProjects();
-    res.json({ success: true, projects });
+    res.json(projects);
   } catch (error) {
     logger.error(`שגיאה בקבלת רשימת פרויקטים: ${error.message}`);
     res.status(500).json({ error: 'שגיאה בקבלת רשימת פרויקטים', message: error.message });
+  }
+});
+
+// הוספת פרויקט חדש
+app.post('/projects/add', async (req, res) => {
+  try {
+    const { name, path } = req.body;
+    
+    if (!name || !path) {
+      return res.status(400).json({ error: 'נדרש שם פרויקט ונתיב' });
+    }
+    
+    // בדוק אם הנתיב קיים
+    if (!fs.existsSync(path)) {
+      return res.status(400).json({ error: 'הנתיב שצוין אינו קיים' });
+    }
+    
+    // הוסף את הפרויקט החדש
+    const newProject = await projectManager.addProject(name, path);
+    
+    // בחר אותו אוטומטית כפרויקט הפעיל
+    await projectManager.selectProject(name);
+    
+    res.json({ 
+      success: true, 
+      message: `פרויקט ${name} נוסף בהצלחה`,
+      project: newProject
+    });
+  } catch (error) {
+    logger.error(`שגיאה בהוספת פרויקט: ${error.message}`);
+    res.status(500).json({ error: 'שגיאה בהוספת פרויקט', message: error.message });
   }
 });
 
@@ -348,6 +380,105 @@ app.post('/open-file', async (req, res) => {
   }
 });
 
+// נקודות קצה עבור לוגים בזמן אמת - לדאשבורד
+app.get('/logs/live/:agent', async (req, res) => {
+  try {
+    const agentName = req.params.agent;
+    
+    // רשימת הסוכנים הקיימים במערכת
+    const validAgents = ['dev_agent', 'qa_agent', 'executor_agent', 'summary_agent'];
+    
+    if (!validAgents.includes(agentName)) {
+      return res.status(404).json({ error: `Agent ${agentName} not found` });
+    }
+    
+    // נתיב לקובץ הלוג של הסוכן
+    const logPath = path.join(__dirname, `logs/README_${agentName}.md`);
+    
+    // בדוק אם הקובץ קיים
+    if (!fs.existsSync(logPath)) {
+      // אם הקובץ לא קיים, צור קובץ לוג בסיסי
+      const defaultContent = `# ${agentName} Log\n\nNo activities recorded yet.`;
+      
+      // יצירת תיקיית logs אם לא קיימת
+      if (!fs.existsSync(path.join(__dirname, 'logs'))) {
+        fs.mkdirSync(path.join(__dirname, 'logs'), { recursive: true });
+      }
+      
+      // כתיבת תוכן ברירת מחדל
+      fs.writeFileSync(logPath, defaultContent, 'utf8');
+      return res.send(defaultContent);
+    }
+    
+    // קריאת הקובץ והחזרה
+    const logContent = fs.readFileSync(logPath, 'utf8');
+    res.send(logContent);
+    
+  } catch (error) {
+    logger.error(`Error reading log for agent: ${error.message}`);
+    res.status(500).send(`Error reading log: ${error.message}`);
+  }
+});
+
+// נקודת קצה עבור workspace
+app.get('/workspace', async (req, res) => {
+  try {
+    const activeProject = await projectManager.getActiveProject();
+    res.json({ activeProject });
+  } catch (error) {
+    logger.error(`Error getting workspace: ${error.message}`);
+    res.status(500).json({ error: 'Error getting workspace', message: error.message });
+  }
+});
+
+// הגדרת פרויקט כ-workspace
+app.post('/workspace/set', async (req, res) => {
+  try {
+    const { projectId } = req.body;
+    
+    if (!projectId) {
+      return res.status(400).json({ error: 'Project ID not provided' });
+    }
+    
+    // קבלת רשימת פרויקטים
+    const projects = await projectManager.getProjects();
+    console.log("מקבל פרויקטים...", projects);
+    
+    // חיפוש הפרויקט לפי המזהה
+    const project = projects.find(p => p.id === projectId || p.name === projectId);
+    console.log("פרויקט שנמצא:", project);
+    
+    if (!project) {
+      console.log("לא נמצא פרויקט עם מזהה:", projectId);
+      console.log("פרויקטים זמינים:", projects);
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // הגדרת הפרויקט כפעיל
+    const result = await projectManager.selectProject(project.name);
+    
+    // עדכון הסוכנים
+    for (const agent of Object.values(agents)) {
+      if (typeof agent.setProjectPath === 'function') {
+        try {
+          await agent.setProjectPath(result.path);
+        } catch (err) {
+          console.error(`שגיאה בעדכון נתיב פרויקט עבור סוכן:`, err);
+        }
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      message: `פרויקט ${project.name} נבחר בהצלחה`,
+      workspace: project
+    });
+  } catch (error) {
+    logger.error(`שגיאה בהגדרת workspace: ${error.message}`);
+    res.status(500).json({ error: 'שגיאה בהגדרת workspace', message: error.message });
+  }
+});
+
 // הפעלת השרת
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
@@ -355,11 +486,37 @@ app.listen(PORT, async () => {
   // רישום הסוכנים במערכת
   await registerAgents();
   
+  // רשימת כל הנתיבים במערכת
+  console.log("\nAvailable API endpoints:");
+  
+  // מציג את כל הנתיבים המוגדרים
+  const endpoints = [];
+  
+  app._router.stack.forEach(middleware => {
+    if(middleware.route) { // routes registered directly on the app
+      endpoints.push(`${Object.keys(middleware.route.methods)[0].toUpperCase()} ${middleware.route.path}`);
+    } else if(middleware.name === 'router') { // router middleware
+      middleware.handle.stack.forEach(handler => {
+        if(handler.route) {
+          const method = Object.keys(handler.route.methods)[0].toUpperCase();
+          endpoints.push(`${method} ${handler.route.path}`);
+        }
+      });
+    }
+  });
+  
+  // מיון הנתיבים לפי אלפבית
+  endpoints.sort().forEach(endpoint => {
+    console.log(`- ${endpoint}`);
+  });
+  
   // אתחול סוכן התזמון אם מוגדר ב-.env
   if (process.env.SCHEDULER_AUTO_INIT === 'true') {
     schedulerAgent.init();
     console.log('Scheduler agent initialized');
   }
+  
+  logger.info('[agent_manager] סוכן scheduler נרשם במערכת');
 });
 
 // =============================================================
@@ -634,7 +791,7 @@ app.get('/summary/agent/:agentName', async (req, res) => {
     const { agentName } = req.params;
     const { period, insights, format } = req.query;
 
-    const summaryAgent = agentManager.getAgent('summary');
+    // משתמש במופע summaryAgent הגלובלי במקום לנסות לקבל אותו מ-agentManager
     if (!summaryAgent) {
       return res.status(404).json({ error: 'Summary agent not found' });
     }
@@ -657,7 +814,7 @@ app.get('/summary/system', async (req, res) => {
   try {
     const { period, insights, format } = req.query;
 
-    const summaryAgent = agentManager.getAgent('summary');
+    // משתמש במופע summaryAgent הגלובלי במקום לנסות לקבל אותו מ-agentManager
     if (!summaryAgent) {
       return res.status(404).json({ error: 'Summary agent not found' });
     }
@@ -673,5 +830,180 @@ app.get('/summary/system', async (req, res) => {
   } catch (error) {
     console.error('Error generating system summary:', error);
     res.status(500).json({ error: 'Failed to generate system summary', details: error.message });
+  }
+});
+
+// API נקודת קצה עבור שאילתות AI
+app.post('/ask-ai', async (req, res) => {
+  try {
+    const { prompt, model } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({ error: 'השאילתה חסרה' });
+    }
+    
+    let modelId;
+    switch (model) {
+      case 'gpt-4':
+        modelId = 'openai/gpt-4-turbo';
+        break;
+      case 'claude-3.7':
+        modelId = 'anthropic/claude-3-7-sonnet';
+        break;
+      case 'huggingface':
+        modelId = 'huggingface/mistral-7b';
+        break;
+      default:
+        modelId = 'openai/gpt-4-turbo';
+    }
+    
+    logger.info(`שאילתת AI התקבלה: "${prompt.substring(0, 50)}..." עם מודל ${modelId}`);
+    
+    const response = await aiEngine.generateText({
+      model: modelId,
+      prompt: prompt,
+      temperature: 0.7,
+      maxTokens: 1000
+    });
+    
+    res.json({ response });
+  } catch (error) {
+    logger.error(`שגיאה בהפעלת שאילתת AI: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// נתיב לקבלת מידע על הסוכנים במערכת
+app.get('/agents', async (req, res) => {
+  try {
+    const agentsList = Object.keys(agents).map(agentName => {
+      const agent = agents[agentName];
+      return {
+        id: agentName,
+        name: agentName,
+        status: agent.active ? 'active' : 'inactive',
+        type: 'AI Agent',
+        description: `AI ${agentName} agent`
+      };
+    });
+    
+    res.json(agentsList);
+  } catch (error) {
+    logger.error(`Error getting agents list: ${error.message}`);
+    res.status(500).json({ error: 'Error getting agents list', message: error.message });
+  }
+});
+
+// נתיב לקבלת מידע על סוכן ספציפי
+app.get('/agents/:agentId', async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    
+    if (!agents[agentId]) {
+      return res.status(404).json({ error: `Agent ${agentId} not found` });
+    }
+    
+    const agent = agents[agentId];
+    
+    res.json({
+      id: agentId,
+      name: agentId,
+      status: agent.active ? 'active' : 'inactive',
+      type: 'AI Agent',
+      description: `AI ${agentId} agent`,
+      capabilities: Object.keys(agent).filter(key => typeof agent[key] === 'function')
+    });
+  } catch (error) {
+    logger.error(`Error getting agent info: ${error.message}`);
+    res.status(500).json({ error: 'Error getting agent info', message: error.message });
+  }
+});
+
+// נתיב לקבלת זיכרון של סוכן ספציפי דרך נתיב /agents (מיפוי מחדש ל-/memory/:agent)
+app.get('/agents/:agentId/memory', async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    
+    if (!agentId) {
+      return res.status(400).json({ error: 'Agent ID required' });
+    }
+    
+    const memoryData = await memoryManager.getMemoryForApi(agentId);
+    res.json(memoryData);
+  } catch (error) {
+    logger.error(`Error getting agent memory: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// נתיב לחיפוש בזיכרון של סוכן ספציפי דרך נתיב /agents
+app.post('/agents/:agentId/memory/search', async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const { query, options } = req.body;
+    
+    if (!agentId) {
+      return res.status(400).json({ error: 'Agent ID required' });
+    }
+    
+    if (!query) {
+      return res.status(400).json({ error: 'Search query required' });
+    }
+    
+    const results = await memoryManager.searchMemory(agentId, query, options);
+    res.json(results);
+  } catch (error) {
+    logger.error(`Error searching agent memory: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API לפתיחת חלון בחירת תיקייה
+app.get('/select-folder', (req, res) => {
+  try {
+    // בתרחיש אמיתי, היינו משתמשים ב-Electron או בספריית Node.js אחרת לפתיחת דיאלוג
+    // כאן נדמה את זה על ידי קריאה לפקודת מערכת הפעלה מתאימה
+    const isWindows = process.platform === 'win32';
+    
+    if (isWindows) {
+      // פקודה לפתיחת דיאלוג בחירת תיקייה ב-Windows
+      const command = `powershell -command "Add-Type -AssemblyName System.Windows.Forms; $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{Description = 'Choose a project folder'; ShowNewFolderButton = $true}; if ($folderBrowser.ShowDialog() -eq 'OK') {$folderBrowser.SelectedPath}"`;
+      
+      require('child_process').exec(command, (err, stdout, stderr) => {
+        if (err) {
+          logger.error(`Error opening folder dialog: ${err}`);
+          return res.status(500).json({ error: "Error opening folder dialog" });
+        }
+        
+        const selectedPath = stdout.trim();
+        
+        if (!selectedPath) {
+          return res.json({ cancelled: true });
+        }
+        
+        res.json({ path: selectedPath });
+      });
+    } else {
+      // לינוקס/מק
+      const command = `zenity --file-selection --directory --title="Choose a project folder"`;
+      
+      require('child_process').exec(command, (err, stdout, stderr) => {
+        if (err && err.code !== 1) { // קוד יציאה 1 בzenity מציין ביטול
+          logger.error(`Error opening folder dialog: ${err}`);
+          return res.status(500).json({ error: "Error opening folder dialog" });
+        }
+        
+        const selectedPath = stdout.trim();
+        
+        if (!selectedPath) {
+          return res.json({ cancelled: true });
+        }
+        
+        res.json({ path: selectedPath });
+      });
+    }
+  } catch (err) {
+    logger.error(`Error selecting folder: ${err.message}`);
+    res.status(500).json({ error: "Error selecting folder" });
   }
 }); 
