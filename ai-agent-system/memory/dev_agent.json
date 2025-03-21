@@ -1,0 +1,71 @@
+{
+  "agentName": "dev_agent",
+  "sessions": [
+    {
+      "id": "session_1",
+      "startTime": "2023-11-01T10:00:00.000Z",
+      "endTime": "2023-11-01T10:15:00.000Z",
+      "actions": [
+        {
+          "title": "ניתוח קוד",
+          "description": "ניתוח מבנה הפרויקט וזיהוי ארכיטקטורה",
+          "timestamp": "2023-11-01T10:00:30.000Z",
+          "params": {
+            "projectPath": "projects/example-project",
+            "options": {
+              "deep": true
+            }
+          },
+          "result": {
+            "success": true,
+            "structure": {
+              "frontend": "React",
+              "backend": "Express",
+              "database": "MongoDB"
+            }
+          }
+        },
+        {
+          "title": "כתיבת קוד",
+          "description": "יצירת שכבת שירות חדשה לתכונה X",
+          "timestamp": "2023-11-01T10:05:00.000Z",
+          "params": {
+            "feature": "userAuthentication",
+            "path": "src/services/auth.js"
+          },
+          "result": {
+            "success": true,
+            "filePath": "src/services/auth.js",
+            "linesAdded": 45
+          }
+        },
+        {
+          "title": "הוספת שכבת מודל",
+          "description": "יצירת מודל לישות חדשה במערכת",
+          "timestamp": "2023-11-01T10:10:00.000Z",
+          "params": {
+            "entity": "Product",
+            "path": "src/models/product.js"
+          },
+          "result": {
+            "success": true,
+            "filePath": "src/models/product.js",
+            "linesAdded": 30
+          }
+        }
+      ],
+      "completed": true,
+      "summary": {
+        "description": "יצירת תכונת אימות משתמשים ומודל מוצר",
+        "filesCreated": 2,
+        "filesModified": 0,
+        "linesAdded": 75
+      }
+    }
+  ],
+  "lastUpdated": "2023-11-01T10:15:00.000Z",
+  "stats": {
+    "totalSessions": 1,
+    "totalActions": 3
+  }
+} 
