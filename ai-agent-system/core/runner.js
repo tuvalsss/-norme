@@ -1,5 +1,5 @@
 const { exec, spawn } = require('child_process');
-const { logger } = require('./logger');
+const logger = require('./logger');
 const util = require('util');
 const path = require('path');
 const fs = require('fs-extra');
@@ -8,7 +8,8 @@ const fs = require('fs-extra');
 const execPromise = util.promisify(exec);
 
 /**
- * מנהל הרצת פקודות מעטפת
+ * Task Runner System
+ * Handles running external commands, scripts, and code execution
  */
 class Runner {
   constructor(workspacePath = '../workspace') {
@@ -29,7 +30,13 @@ class Runner {
       'chmod 777', 'chmod -R 777'
     ];
     
-    logger.info(`מנהל הרצת פקודות אותחל עם תיקיית עבודה: ${this.workspacePath}`);
+    this.activeProcesses = {};
+    this.logDirectory = path.join(__dirname, '../logs/processes');
+    
+    // Ensure log directory exists
+    fs.ensureDirSync(this.logDirectory);
+    
+    logger.info(`Task Runner initialized with workspace: ${this.workspacePath}`);
   }
 
   /**
@@ -43,7 +50,7 @@ class Runner {
     // בדוק אם הפקודה מכילה מילות מפתח אסורות
     for (const forbidden of this.forbiddenCommands) {
       if (lowerCommand.includes(forbidden.toLowerCase())) {
-        logger.error(`פקודה נדחתה: ${command} - מכילה פעולה אסורה: ${forbidden}`);
+        logger.error(`Command rejected: ${command} - Contains forbidden operation: ${forbidden}`);
         return false;
       }
     }
@@ -52,80 +59,217 @@ class Runner {
   }
 
   /**
-   * מריץ פקודת מעטפת ומחזיר את הפלט שלה
-   * @param {string} command - הפקודה להרצה
-   * @returns {Promise<Object>} - הפלט מהפקודה (stdout, stderr)
+   * Executes a shell command
+   * @param {string} command - The command to execute
+   * @param {Object} options - Execution options
+   * @returns {Promise<Object>} Execution result
    */
-  async runCommand(command) {
-    if (!this._isCommandSafe(command)) {
-      throw new Error(`הפקודה '${command}' נדחתה מסיבות אבטחה`);
-    }
+  async executeCommand(command, options = {}) {
+    const taskId = options.taskId || `task_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const cwd = options.cwd || process.cwd();
+    const timeout = options.timeout || 60000; // Default 1 minute timeout
+    const shouldLog = options.log !== false;
     
     try {
-      logger.info(`מריץ פקודה: ${command}`);
+      logger.info(`Executing command: ${command} (${taskId})`);
       
-      const { stdout, stderr } = await execPromise(command, {
-        cwd: this.workspacePath,
-        maxBuffer: 1024 * 1024 * 10 // 10MB buffer
-      });
+      // Split command into command and args
+      const parts = command.split(' ');
+      const cmd = parts[0];
+      const args = parts.slice(1);
       
-      if (stderr) {
-        logger.warn(`פקודה החזירה שגיאות: ${command}\n${stderr}`);
+      // Set up logging
+      let logFile = null;
+      if (shouldLog) {
+        const logPath = path.join(this.logDirectory, `${taskId}.log`);
+        logFile = fs.createWriteStream(logPath, { flags: 'a' });
+        logFile.write(`Command: ${command}\nStarted: ${new Date().toISOString()}\n\n`);
       }
       
-      return { stdout, stderr };
+      return new Promise((resolve, reject) => {
+        let stdout = '';
+        let stderr = '';
+        let killed = false;
+        
+        // Execute command
+        const process = spawn(cmd, args, {
+          cwd,
+          shell: true,
+          env: { ...options.env, ...process.env }
+        });
+        
+        // Track process
+        this.activeProcesses[taskId] = {
+          process,
+          command,
+          startTime: Date.now(),
+          options
+        };
+        
+        // Handle data events
+        process.stdout.on('data', (data) => {
+          const dataStr = data.toString();
+          stdout += dataStr;
+          if (logFile) logFile.write(`[stdout] ${dataStr}`);
+          if (options.onOutput) options.onOutput(dataStr, 'stdout');
+        });
+        
+        process.stderr.on('data', (data) => {
+          const dataStr = data.toString();
+          stderr += dataStr;
+          if (logFile) logFile.write(`[stderr] ${dataStr}`);
+          if (options.onOutput) options.onOutput(dataStr, 'stderr');
+        });
+        
+        // Handle process exit
+        process.on('close', (code) => {
+          delete this.activeProcesses[taskId];
+          
+          if (logFile) {
+            logFile.write(`\nExit code: ${code}\nFinished: ${new Date().toISOString()}\n`);
+            logFile.end();
+          }
+          
+          const duration = Date.now() - this.activeProcesses[taskId]?.startTime || 0;
+          
+          if (killed) {
+            reject(new Error(`Command timed out after ${timeout}ms: ${command}`));
+          } else if (code !== 0 && !options.ignoreExitCode) {
+            logger.error(`Command failed with code ${code}: ${command}`);
+            reject(new Error(`Command failed with code ${code}: ${stderr || 'No error output'}`));
+          } else {
+            logger.info(`Command completed successfully: ${command}`);
+            resolve({
+              taskId,
+              command,
+              exitCode: code,
+              stdout,
+              stderr,
+              duration
+            });
+          }
+        });
+        
+        // Handle timeout
+        if (timeout > 0) {
+          setTimeout(() => {
+            if (this.activeProcesses[taskId]) {
+              killed = true;
+              this.killProcess(taskId);
+            }
+          }, timeout);
+        }
+      });
     } catch (error) {
-      logger.error(`שגיאה בהרצת פקודה ${command}: ${error.message}`);
+      logger.error(`Error executing command ${command}: ${error.message}`);
       throw error;
     }
   }
-
+  
   /**
-   * מריץ פקודה ושולח עדכונים בזמן אמת
-   * @param {string} command - הפקודה להרצה
-   * @param {Function} stdoutCallback - קולבק לפלט סטנדרטי
-   * @param {Function} stderrCallback - קולבק לפלט שגיאה
-   * @param {Function} closeCallback - קולבק לסיום הפקודה
-   * @returns {ChildProcess} - תהליך הבן שנוצר
+   * Stops a running process
+   * @param {string} taskId - ID of the process to stop
+   * @returns {boolean} Success status
    */
-  runLiveCommand(command, stdoutCallback, stderrCallback, closeCallback) {
-    if (!this._isCommandSafe(command)) {
-      throw new Error(`הפקודה '${command}' נדחתה מסיבות אבטחה`);
+  killProcess(taskId) {
+    const processInfo = this.activeProcesses[taskId];
+    if (!processInfo) {
+      logger.warn(`No active process found with ID: ${taskId}`);
+      return false;
     }
     
-    logger.info(`מריץ פקודה בזמן אמת: ${command}`);
+    try {
+      logger.info(`Killing process: ${taskId} (${processInfo.command})`);
+      processInfo.process.kill('SIGTERM');
+      
+      // Give it a second to terminate gracefully
+      setTimeout(() => {
+        if (this.activeProcesses[taskId]) {
+          logger.warn(`Force killing process: ${taskId}`);
+          processInfo.process.kill('SIGKILL');
+          delete this.activeProcesses[taskId];
+        }
+      }, 1000);
+      
+      return true;
+    } catch (error) {
+      logger.error(`Failed to kill process ${taskId}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Executes a JavaScript code snippet
+   * @param {string} code - JavaScript code to execute
+   * @param {Object} context - Execution context variables
+   * @returns {Promise<any>} Execution result
+   */
+  async executeJavaScript(code, context = {}) {
+    try {
+      logger.info('Executing JavaScript code');
+      
+      // Create a safe execution context
+      const safeContext = {
+        console: {
+          log: (...args) => logger.info('[js_execution]', ...args),
+          error: (...args) => logger.error('[js_execution]', ...args),
+          warn: (...args) => logger.warn('[js_execution]', ...args),
+          info: (...args) => logger.info('[js_execution]', ...args)
+        },
+        setTimeout,
+        clearTimeout,
+        ...context
+      };
+      
+      // Create function with context params
+      const contextKeys = Object.keys(safeContext);
+      const contextValues = Object.values(safeContext);
+      
+      // Function to execute the code with the provided context
+      const executor = new Function(...contextKeys, `
+        try {
+          return (async () => {
+            ${code}
+          })();
+        } catch (error) {
+          throw new Error('JavaScript execution error: ' + error.message);
+        }
+      `);
+      
+      // Execute the code
+      const result = await executor(...contextValues);
+      return result;
+    } catch (error) {
+      logger.error(`Error executing JavaScript: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Gets active processes information
+   * @returns {Object} Active processes
+   */
+  getActiveProcesses() {
+    const processes = {};
     
-    // פצל את הפקודה למערך פרמטרים
-    const parts = command.split(' ');
-    const cmd = parts[0];
-    const args = parts.slice(1);
+    for (const [taskId, info] of Object.entries(this.activeProcesses)) {
+      processes[taskId] = {
+        command: info.command,
+        startTime: info.startTime,
+        duration: Date.now() - info.startTime,
+        options: {
+          ...info.options,
+          // Remove sensitive data and functions
+          env: info.options.env ? '[redacted]' : undefined,
+          onOutput: info.options.onOutput ? '[function]' : undefined
+        }
+      };
+    }
     
-    // צור תהליך בן חדש
-    const child = spawn(cmd, args, {
-      cwd: this.workspacePath,
-      shell: true
-    });
-    
-    // הגדר מאזינים לאירועים
-    child.stdout.on('data', (data) => {
-      const output = data.toString();
-      logger.debug(`פלט מהפקודה: ${output}`);
-      if (stdoutCallback) stdoutCallback(output);
-    });
-    
-    child.stderr.on('data', (data) => {
-      const output = data.toString();
-      logger.warn(`שגיאה מהפקודה: ${output}`);
-      if (stderrCallback) stderrCallback(output);
-    });
-    
-    child.on('close', (code) => {
-      logger.info(`הפקודה הסתיימה עם קוד יציאה: ${code}`);
-      if (closeCallback) closeCallback(code);
-    });
-    
-    return child;
+    return processes;
   }
 }
 
-module.exports = new Runner(); 
+// Create and export singleton instance
+const runner = new Runner();
+module.exports = runner; 

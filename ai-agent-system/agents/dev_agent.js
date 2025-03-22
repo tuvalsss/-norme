@@ -2,948 +2,722 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs-extra');
 const { EventEmitter } = require('events');
-const { logger } = require('../core/logger');
+const logger = require('../core/logger');
 const { v4: uuidv4 } = require('uuid');
 const memoryManager = require('../core/memoryManager');
 const aiEngine = require('../core/aiEngine');
 const agentManager = require('../core/agentManager');
+const BaseAgent = require('../core/BaseAgent');
 
 /**
- * סוכן פיתוח
- * אחראי על ניהול משימות פיתוח וכתיבת קוד
+ * Development Agent
+ * Responsible for managing development tasks and code writing
  */
-class DevAgent {
-  constructor() {
-    this.active = false;
-    this.workingDir = null;
-    this.currentTask = null;
-    this.events = new EventEmitter();
-    this.logPrefix = '[dev_agent]';
+class DevAgent extends BaseAgent {
+  constructor(options = {}) {
+    super({
+      name: options.name || 'dev_agent',
+      type: 'dev',
+      description: 'Development agent for code generation and project management',
+      ...options
+    });
     
-    // תיקיית ברירת מחדל לעבודה
-    this.workspacePath = path.resolve(__dirname, '../workspace');
+    // Default working directory
+    this.workspacePath = options.workspacePath || path.join(process.cwd(), 'workspace');
     
-    // מצב עבודה (debug/production)
+    // Working mode (debug/production)
     this.mode = process.env.DEV_AGENT_MODE || 'debug';
     
-    // מזהה המפגש הנוכחי
+    // Current session ID
     this.currentSessionId = null;
     
-    // זיכרון סוכן
-    this.memory = null;
-    
-    // תת-סוכנים
+    // Sub-agents
     this.subAgents = {
-      gpt4: new Gpt4SubAgent(this), // תת-סוכן GPT-4 (coding)
-      claude: new ClaudeSubAgent(this) // תת-סוכן Claude (code review)
+      gpt4: new Gpt4SubAgent(this), // GPT-4 sub-agent (coding)
+      claude: new ClaudeSubAgent(this) // Claude sub-agent (code review)
     };
     
-    // האם להשתמש בתת-סוכנים? (ברירת מחדל: כן)
-    this.useSubAgents = process.env.USE_SUB_AGENTS !== 'false';
+    // Whether to use sub-agents (default: yes)
+    this.useSubAgents = options.useSubAgents !== false;
     
-    logger.info(`${this.logPrefix} סוכן פיתוח אותחל. שימוש בתת-סוכנים: ${this.useSubAgents ? 'כן' : 'לא'}`);
+    logger.info(`Development agent initialized. Using sub-agents: ${this.useSubAgents ? 'yes' : 'no'}`);
   }
   
   /**
-   * הפעל את הסוכן
+   * Starts the agent
    */
   async start() {
-    if (this.active) {
-      logger.info(`${this.logPrefix} הסוכן כבר פעיל`);
+    if (this.isRunning) {
+      logger.warn('Development agent is already running');
       return;
     }
     
     try {
-      logger.info(`${this.logPrefix} מפעיל סוכן פיתוח...`);
+      logger.info('Starting development agent...');
       
-      // יצירת מזהה מפגש חדש
-      this.currentSessionId = `session_${uuidv4()}`;
+      // Ensure workspace directory exists
+      await fs.ensureDir(this.workspacePath);
       
-      // טען את זיכרון הסוכן
-      this.memory = await memoryManager.loadMemory('dev_agent');
-      
-      // תעד את התחלת המפגש
-      await this._logSessionStart();
-      
-      // ברישום אצל מנהל הסוכנים
-      agentManager.registerAgent('dev_agent', this);
-      
-      // הפעל את תת-הסוכנים (אם צריך)
-      if (this.useSubAgents) {
-        await Promise.all([
-          this.subAgents.gpt4.start(),
-          this.subAgents.claude.start()
-        ]);
+      // Initialize memory
+      if (!this.memory) {
+        this.memory = memoryManager.createAgentMemory(this.name);
       }
       
-      this.active = true;
-      logger.info(`${this.logPrefix} סוכן פיתוח הופעל בהצלחה (מפגש: ${this.currentSessionId})`);
+      // Start sub-agents if enabled
+      if (this.useSubAgents) {
+        for (const [name, agent] of Object.entries(this.subAgents)) {
+          if (agent.start) {
+            await agent.start();
+            logger.info(`Started sub-agent: ${name}`);
+          }
+        }
+      }
+      
+      this.isRunning = true;
+      this.emit('started');
+      
+      logger.info('Development agent started successfully');
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בהפעלת סוכן פיתוח: ${error.message}`);
+      logger.error(`Failed to start development agent: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * כבה את הסוכן
+   * Stops the agent
    */
   async stop() {
-    if (!this.active) {
-      logger.info(`${this.logPrefix} הסוכן כבר כבוי`);
+    if (!this.isRunning) {
+      logger.warn('Development agent is not running');
       return;
     }
     
     try {
-      logger.info(`${this.logPrefix} מכבה סוכן פיתוח...`);
+      logger.info('Stopping development agent...');
       
-      // סגור את המפגש הנוכחי
-      await this._logSessionEnd();
-      
-      // כבה את תת-הסוכנים (אם צריך)
+      // Stop sub-agents
       if (this.useSubAgents) {
-        await Promise.all([
-          this.subAgents.gpt4.stop(),
-          this.subAgents.claude.stop()
-        ]);
+        for (const [name, agent] of Object.entries(this.subAgents)) {
+          if (agent.stop) {
+            await agent.stop();
+            logger.info(`Stopped sub-agent: ${name}`);
+          }
+        }
       }
       
-      // הסר רישום ממנהל הסוכנים
-      agentManager.unregisterAgent('dev_agent');
+      this.isRunning = false;
+      this.emit('stopped');
       
-      this.active = false;
-      this.currentSessionId = null;
-      
-      logger.info(`${this.logPrefix} סוכן פיתוח כובה בהצלחה`);
+      logger.info('Development agent stopped successfully');
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בכיבוי סוכן פיתוח: ${error.message}`);
+      logger.error(`Failed to stop development agent: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * הגדר את נתיב העבודה של הסוכן
-   * @param {string} workingDir - נתיב תיקיית העבודה
+   * Sets the working directory
+   * @param {string} directory - Path to the working directory
    */
-  async setWorkingDirectory(workingDir) {
-    this.workingDir = workingDir;
-    
-    // וודא שהתיקייה קיימת
-    await fs.ensureDir(this.workingDir);
-    
-    logger.info(`${this.logPrefix} הוגדרה תיקיית עבודה: ${this.workingDir}`);
-    
-    // רשום פעולת הגדרת תיקייה לזיכרון
-    if (this.currentSessionId) {
-      await memoryManager.saveAction('dev_agent', this.currentSessionId, {
-        title: 'הגדרת תיקיית עבודה',
-        description: `הגדרת תיקיית עבודה חדשה: ${workingDir}`,
-        params: {
-          workingDir
-        }
-      });
-    }
+  setWorkingDirectory(directory) {
+    this.workspacePath = directory;
+    logger.info(`Set working directory to: ${directory}`);
   }
   
   /**
-   * נתח פרויקט קיים
-   * @param {string} projectPath - נתיב הפרויקט לניתוח
-   * @returns {Promise<object>} - תוצאות הניתוח
+   * Analyzes a project to understand its structure and technologies
+   * @param {string} projectPath - Path to the project
+   * @returns {Object} Project analysis results
    */
   async analyzeProject(projectPath) {
-    if (!this.active) {
-      throw new Error('הסוכן אינו פעיל, יש להפעיל את הסוכן תחילה');
-    }
-    
-    logger.info(`${this.logPrefix} מנתח פרויקט בנתיב: ${projectPath}`);
-    
     try {
-      // בדוק אם הנתיב קיים
-      if (!await fs.pathExists(projectPath)) {
-        throw new Error(`נתיב הפרויקט ${projectPath} אינו קיים`);
+      const fullPath = path.resolve(projectPath);
+      logger.info(`Analyzing project at: ${fullPath}`);
+      
+      // Check if directory exists
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`Project directory does not exist: ${fullPath}`);
       }
       
-      // נסה לאתר קבצי תצורה נפוצים כדי לזהות את סוג הפרויקט
-      const hasPackageJson = await fs.pathExists(path.join(projectPath, 'package.json'));
-      const hasPythonFiles = await fs.pathExists(path.join(projectPath, 'requirements.txt')) || 
-                            await fs.pathExists(path.join(projectPath, 'setup.py'));
-      const hasDockerfile = await fs.pathExists(path.join(projectPath, 'Dockerfile'));
-      
-      // חפש קבצי קוד משמעותיים
-      let fileTypes = {};
-      const files = await this._scanDirectory(projectPath);
-      
-      files.forEach(file => {
-        const ext = path.extname(file).toLowerCase();
-        if (ext) {
-          fileTypes[ext] = (fileTypes[ext] || 0) + 1;
-        }
-      });
-      
-      // זיהוי אוטומטי של סוג הפרויקט
-      let projectType = 'unknown';
-      let framework = 'unknown';
-      
-      if (hasPackageJson) {
-        const packageJson = await fs.readJson(path.join(projectPath, 'package.json'));
-        
-        // נסה לזהות את הסביבה (Node.js, React, Vue, Angular, וכו')
-        const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
-        
-        if (deps.react) {
-          projectType = 'frontend';
-          framework = 'react';
-        } else if (deps.vue) {
-          projectType = 'frontend';
-          framework = 'vue';
-        } else if (deps.angular) {
-          projectType = 'frontend';
-          framework = 'angular';
-        } else if (deps.express || deps.koa || deps.hapi) {
-          projectType = 'backend';
-          framework = deps.express ? 'express' : deps.koa ? 'koa' : 'hapi';
-        } else {
-          projectType = 'nodejs';
-          framework = 'nodejs';
-        }
-      } else if (hasPythonFiles) {
-        projectType = 'backend';
-        framework = 'python';
-      }
-      
-      // צור דוח ניתוח
+      // Collect project information
       const analysis = {
-        projectPath,
-        projectType,
-        framework,
-        fileCount: files.length,
-        fileTypes,
-        hasDockerfile,
-        timestamp: new Date().toISOString()
+        path: fullPath,
+        files: {},
+        technologies: {},
+        dependencies: {},
+        structure: {}
       };
       
-      // שמור את הניתוח בזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('dev_agent', this.currentSessionId, {
-          title: 'ניתוח פרויקט',
-          description: `ניתוח פרויקט בנתיב: ${projectPath}`,
-          params: {
-            projectPath
-          },
-          result: analysis
-        });
-      }
+      // Gather file statistics
+      const fileStats = await this._collectFileStats(fullPath);
+      analysis.files = fileStats;
       
-      logger.info(`${this.logPrefix} ניתוח הפרויקט הושלם: זוהה פרויקט ${projectType} (${framework})`);
+      // Detect technologies and frameworks
+      analysis.technologies = await this._detectTechnologies(fullPath, fileStats);
       
+      // Analyze dependencies
+      analysis.dependencies = await this._analyzeDependencies(fullPath);
+      
+      // Map project structure
+      analysis.structure = await this._mapProjectStructure(fullPath);
+      
+      // Save analysis to memory
+      this.memory.store('project_analysis', analysis);
+      
+      logger.info(`Project analysis completed for: ${fullPath}`);
       return analysis;
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בניתוח הפרויקט: ${error.message}`);
-      
-      // רשום שגיאה לזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('dev_agent', this.currentSessionId, {
-          title: 'שגיאה בניתוח פרויקט',
-          description: `שגיאה בניתוח פרויקט בנתיב: ${projectPath}`,
-          params: {
-            projectPath
-          },
-          error: error.message
-        });
-      }
-      
+      logger.error(`Project analysis failed: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * כתוב קובץ קוד חדש
-   * @param {string} filePath - נתיב הקובץ
-   * @param {string} content - תוכן הקובץ
-   * @param {object} options - אפשרויות נוספות
-   * @returns {Promise<boolean>} - האם הפעולה הצליחה
-   */
-  async writeFile(filePath, content, options = {}) {
-    if (!this.active) {
-      throw new Error('הסוכן אינו פעיל, יש להפעיל את הסוכן תחילה');
-    }
-    
-    try {
-      const fullPath = path.isAbsolute(filePath) ? filePath : path.join(this.workingDir, filePath);
-      
-      logger.info(`${this.logPrefix} כותב קובץ: ${fullPath}`);
-      
-      // וודא שתיקיית היעד קיימת
-      await fs.ensureDir(path.dirname(fullPath));
-      
-      // אם הקובץ קיים וה-flag לא מוגדר לדריסה, זרוק שגיאה
-      if (await fs.pathExists(fullPath) && !options.overwrite) {
-        throw new Error(`הקובץ ${fullPath} כבר קיים ו-overwrite לא מוגדר`);
-      }
-      
-      // כתוב את הקובץ
-      await fs.writeFile(fullPath, content, 'utf8');
-      
-      const stats = {
-        size: Buffer.byteLength(content, 'utf8'),
-        lines: content.split('\n').length,
-        path: fullPath,
-        extension: path.extname(fullPath)
-      };
-      
-      // שמור את פעולת הכתיבה בזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('dev_agent', this.currentSessionId, {
-          title: 'כתיבת קובץ',
-          description: `כתיבת קובץ: ${filePath}`,
-          params: {
-            filePath,
-            overwrite: !!options.overwrite,
-            extension: path.extname(filePath)
-          },
-          result: stats
-        });
-      }
-      
-      logger.info(`${this.logPrefix} הקובץ נכתב בהצלחה: ${stats.lines} שורות, ${stats.size} בתים`);
-      
-      return true;
-    } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בכתיבת הקובץ: ${error.message}`);
-      
-      // רשום שגיאה לזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('dev_agent', this.currentSessionId, {
-          title: 'שגיאה בכתיבת קובץ',
-          description: `שגיאה בכתיבת קובץ: ${filePath}`,
-          params: {
-            filePath
-          },
-          error: error.message
-        });
-      }
-      
-      throw error;
-    }
-  }
-  
-  /**
-   * קרא קובץ מתיקיית העבודה
-   * @param {string} filePath - נתיב הקובץ
-   * @returns {Promise<string>} - תוכן הקובץ
-   */
-  async readFile(filePath) {
-    if (!this.active) {
-      throw new Error('הסוכן אינו פעיל, יש להפעיל את הסוכן תחילה');
-    }
-    
-    try {
-      const fullPath = path.isAbsolute(filePath) ? filePath : path.join(this.workingDir, filePath);
-      
-      logger.info(`${this.logPrefix} קורא קובץ: ${fullPath}`);
-      
-      // בדוק אם הקובץ קיים
-      if (!await fs.pathExists(fullPath)) {
-        throw new Error(`הקובץ ${fullPath} אינו קיים`);
-      }
-      
-      // קרא את הקובץ
-      const content = await fs.readFile(fullPath, 'utf8');
-      
-      // שמור את פעולת הקריאה בזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('dev_agent', this.currentSessionId, {
-          title: 'קריאת קובץ',
-          description: `קריאת קובץ: ${filePath}`,
-          params: {
-            filePath
-          },
-          result: {
-            size: Buffer.byteLength(content, 'utf8'),
-            lines: content.split('\n').length
-          }
-        });
-      }
-      
-      return content;
-    } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בקריאת הקובץ: ${error.message}`);
-      
-      // רשום שגיאה לזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('dev_agent', this.currentSessionId, {
-          title: 'שגיאה בקריאת קובץ',
-          description: `שגיאה בקריאת קובץ: ${filePath}`,
-          params: {
-            filePath
-          },
-          error: error.message
-        });
-      }
-      
-      throw error;
-    }
-  }
-  
-  /**
-   * חפש במאגר הזיכרון של הסוכן
-   * @param {string} keyword - מילת מפתח לחיפוש
-   * @returns {Promise<Array>} - תוצאות החיפוש
-   */
-  async searchMemory(keyword) {
-    if (!this.active) {
-      throw new Error('הסוכן אינו פעיל, יש להפעיל את הסוכן תחילה');
-    }
-    
-    try {
-      logger.info(`${this.logPrefix} מחפש בזיכרון: ${keyword}`);
-      
-      const results = await memoryManager.searchMemory('dev_agent', keyword);
-      
-      // שמור את פעולת החיפוש בזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('dev_agent', this.currentSessionId, {
-          title: 'חיפוש בזיכרון',
-          description: `חיפוש בזיכרון: ${keyword}`,
-          params: {
-            keyword
-          },
-          result: {
-            count: results.length
-          }
-        });
-      }
-      
-      return results;
-    } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בחיפוש בזיכרון: ${error.message}`);
-      return [];
-    }
-  }
-  
-  /**
-   * סרוק תיקייה וקבל רשימת קבצים
-   * @param {string} dirPath - נתיב התיקייה
-   * @returns {Promise<Array>} - רשימת קבצים
+   * Collects file statistics for a project
+   * @param {string} projectPath - Project path
+   * @returns {Object} File statistics
    * @private
    */
-  async _scanDirectory(dirPath) {
+  async _collectFileStats(projectPath) {
+    // Implementation would analyze file types, counts, sizes
+    return {
+      totalCount: 0,
+      byExtension: {},
+      largestFiles: []
+    };
+  }
+  
+  /**
+   * Detects technologies used in the project
+   * @param {string} projectPath - Project path
+   * @param {Object} fileStats - File statistics
+   * @returns {Object} Detected technologies
+   * @private
+   */
+  async _detectTechnologies(projectPath, fileStats) {
+    // Implementation would detect languages, frameworks, etc.
+    return {
+      languages: [],
+      frameworks: [],
+      databases: [],
+      tools: []
+    };
+  }
+  
+  /**
+   * Analyzes project dependencies
+   * @param {string} projectPath - Project path
+   * @returns {Object} Dependency information
+   * @private
+   */
+  async _analyzeDependencies(projectPath) {
+    // Implementation would analyze package.json, requirements.txt, etc.
+    return {
+      direct: [],
+      dev: [],
+      indirect: []
+    };
+  }
+  
+  /**
+   * Maps the project structure
+   * @param {string} projectPath - Project path
+   * @returns {Object} Project structure
+   * @private
+   */
+  async _mapProjectStructure(projectPath) {
+    // Implementation would create a tree structure of the project
+    return {};
+  }
+  
+  /**
+   * Generates code for a specific task
+   * @param {Object} task - Code generation task
+   * @returns {Object} Generated code and metadata
+   */
+  async generateCode(task) {
     try {
-      const files = [];
+      logger.info(`Generating code for task: ${task.description}`);
       
-      async function scan(currentPath) {
-        const entries = await fs.readdir(currentPath, { withFileTypes: true });
-        
-        for (const entry of entries) {
-          const fullPath = path.join(currentPath, entry.name);
-          
-          // התעלם מתיקיות node_modules ו-.git
-          if (entry.isDirectory()) {
-            if (entry.name !== 'node_modules' && entry.name !== '.git') {
-              await scan(fullPath);
-            }
-          } else {
-            files.push(fullPath);
-          }
-        }
+      if (!this.isRunning) {
+        await this.start();
       }
       
-      await scan(dirPath);
-      return files;
+      // Use GPT-4 sub-agent for code generation if available
+      if (this.useSubAgents && this.subAgents.gpt4) {
+        return await this.subAgents.gpt4.generateCode(task);
+      } else {
+        // Direct implementation using aiEngine
+        const prompt = this._createCodeGenerationPrompt(task);
+        const response = await aiEngine.query(prompt, { 
+          provider: 'openai', 
+          model: 'gpt-4',
+          agentName: this.name
+        });
+        
+        return this._parseCodeGenerationResponse(response, task);
+      }
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בסריקת תיקייה: ${error.message}`);
-      return [];
+      logger.error(`Code generation failed: ${error.message}`);
+      throw error;
     }
   }
   
   /**
-   * תיעוד התחלת מפגש חדש
+   * Creates a prompt for code generation
+   * @param {Object} task - Code generation task
+   * @returns {string} Prompt for the AI model
+   * @private
    */
-  async _logSessionStart() {
-    if (!this.memory) return;
-    
-    if (!this.memory.sessions) {
-      this.memory.sessions = {};
-    }
-    
-    const startTime = new Date().toISOString();
-    
-    this.memory.sessions[this.currentSessionId] = {
-      startTime,
-      endTime: null,
-      actions: [],
-      status: 'active',
-      summary: null
-    };
-    
-    this.memory.stats.totalSessions = Object.keys(this.memory.sessions).length;
-    this.memory.lastUpdated = startTime;
-    
-    await memoryManager.saveMemory('dev_agent', this.memory);
-    
-    logger.debug(`${this.logPrefix} נפתח מפגש חדש (${this.currentSessionId})`);
+  _createCodeGenerationPrompt(task) {
+    return `I need you to generate code for the following task:
+      
+Description: ${task.description}
+
+${task.requirements ? `Requirements:
+${task.requirements}` : ''}
+
+${task.context ? `Context:
+${task.context}` : ''}
+
+${task.language ? `Programming Language: ${task.language}` : ''}
+${task.framework ? `Framework: ${task.framework}` : ''}
+
+Please provide well-structured, clean, and efficient code that meets these requirements.
+Include appropriate error handling, comments, and documentation.`;
   }
   
   /**
-   * תיעוד סיום מפגש
+   * Parses the AI response to extract generated code
+   * @param {string} response - AI response
+   * @param {Object} task - Original task
+   * @returns {Object} Parsed code and metadata
+   * @private
    */
-  async _logSessionEnd() {
-    if (!this.memory || !this.currentSessionId) return;
-    
-    const session = this.memory.sessions[this.currentSessionId];
-    if (!session) return;
-    
-    const endTime = new Date().toISOString();
-    session.endTime = endTime;
-    session.status = 'completed';
-    
-    // חישוב סטטיסטיקות
-    const actions = session.actions || [];
-    const actionsCount = actions.length;
-    const successCount = actions.filter(a => a.result && a.result.success).length;
-    const failureCount = actionsCount - successCount;
-    
-    // יצירת סיכום מפגש
-    session.summary = {
-      actionsCount,
-      successCount,
-      failureCount,
-      duration: this._calculateDuration(session.startTime, endTime)
+  _parseCodeGenerationResponse(response, task) {
+    // Basic implementation - in practice would use regex to extract code blocks
+    return {
+      task: task.description,
+      code: response,
+      language: task.language,
+      timestamp: new Date().toISOString()
     };
-    
-    this.memory.lastUpdated = endTime;
-    
-    // עדכן סטטיסטיקות כלליות
-    if (!this.memory.stats.lastSuccess && successCount > 0) {
-      this.memory.stats.lastSuccess = endTime;
-    }
-    
-    if (!this.memory.stats.lastFailure && failureCount > 0) {
-      this.memory.stats.lastFailure = endTime;
-    }
-    
-    await memoryManager.saveMemory('dev_agent', this.memory);
-    
-    logger.debug(`${this.logPrefix} מפגש נסגר (${this.currentSessionId}): ${actionsCount} פעולות`);
   }
   
   /**
-   * תיעוד פעולה
+   * Reviews code and provides feedback
+   * @param {Object} codeReview - Code review request
+   * @returns {Object} Review results
    */
-  async _logAction(actionType, parameters, result) {
-    if (!this.memory || !this.currentSessionId) return;
-    
-    const session = this.memory.sessions[this.currentSessionId];
-    if (!session) return;
-    
-    if (!session.actions) {
-      session.actions = [];
+  async reviewCode(codeReview) {
+    try {
+      logger.info(`Reviewing code: ${codeReview.description || 'No description'}`);
+      
+      if (!this.isRunning) {
+        await this.start();
+      }
+      
+      // Use Claude sub-agent for code review if available
+      if (this.useSubAgents && this.subAgents.claude) {
+        return await this.subAgents.claude.reviewCode(codeReview);
+      } else {
+        // Direct implementation using aiEngine
+        const prompt = this._createCodeReviewPrompt(codeReview);
+        const response = await aiEngine.query(prompt, { 
+          provider: 'anthropic', 
+          model: 'claude-3-opus-20240229',
+          agentName: this.name
+        });
+        
+        return this._parseCodeReviewResponse(response, codeReview);
+      }
+    } catch (error) {
+      logger.error(`Code review failed: ${error.message}`);
+      throw error;
     }
-    
-    const timestamp = new Date().toISOString();
-    
-    const action = {
-      id: `action_${uuidv4()}`,
-      type: actionType,
-      parameters,
-      timestamp,
-      result
+  }
+  
+  /**
+   * Creates a prompt for code review
+   * @param {Object} codeReview - Code review request
+   * @returns {string} Prompt for the AI model
+   * @private
+   */
+  _createCodeReviewPrompt(codeReview) {
+    return `Please review the following code:
+
+\`\`\`${codeReview.language || ''}
+${codeReview.code}
+\`\`\`
+
+${codeReview.context ? `Context: ${codeReview.context}` : ''}
+
+Provide a detailed code review covering:
+1. Correctness - Does it work as intended?
+2. Efficiency - Are there performance concerns?
+3. Readability - Is the code easy to understand?
+4. Maintainability - Is it well-structured and easy to modify?
+5. Security - Are there any security vulnerabilities?
+6. Best practices - Does it follow language/framework best practices?
+
+For each issue, provide:
+- Issue description
+- Severity (Critical, High, Medium, Low)
+- Suggested improvement with code example where applicable`;
+  }
+  
+  /**
+   * Parses the AI response to extract code review feedback
+   * @param {string} response - AI response
+   * @param {Object} codeReview - Original review request
+   * @returns {Object} Parsed review results
+   * @private
+   */
+  _parseCodeReviewResponse(response, codeReview) {
+    // Basic implementation
+    return {
+      originalCode: codeReview.code,
+      review: response,
+      timestamp: new Date().toISOString()
     };
+  }
+  
+  /**
+   * Fixes bugs in code
+   * @param {Object} bugFix - Bug fix request
+   * @returns {Object} Fixed code
+   */
+  async fixBug(bugFix) {
+    try {
+      logger.info(`Fixing bug: ${bugFix.description}`);
+      
+      if (!this.isRunning) {
+        await this.start();
+      }
+      
+      // Use GPT-4 sub-agent for bug fixing
+      if (this.useSubAgents && this.subAgents.gpt4) {
+        return await this.subAgents.gpt4.fixBug(bugFix);
+      } else {
+        // Direct implementation
+        const prompt = this._createBugFixPrompt(bugFix);
+        const response = await aiEngine.query(prompt, { 
+          provider: 'openai', 
+          model: 'gpt-4',
+          agentName: this.name
+        });
+        
+        return this._parseBugFixResponse(response, bugFix);
+      }
+    } catch (error) {
+      logger.error(`Bug fix failed: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Creates a prompt for bug fixing
+   * @param {Object} bugFix - Bug fix request
+   * @returns {string} Prompt for the AI model
+   * @private
+   */
+  _createBugFixPrompt(bugFix) {
+    return `Please fix the bug in the following code:
+
+\`\`\`${bugFix.language || ''}
+${bugFix.code}
+\`\`\`
+
+Bug description: ${bugFix.description}
+
+${bugFix.errorMessage ? `Error message: ${bugFix.errorMessage}` : ''}
+${bugFix.context ? `Additional context: ${bugFix.context}` : ''}
+
+Please provide:
+1. The fixed code (complete)
+2. An explanation of the bug and how your solution fixes it
+3. Any recommendations to prevent similar bugs in the future`;
+  }
+  
+  /**
+   * Parses the AI response to extract fixed code
+   * @param {string} response - AI response
+   * @param {Object} bugFix - Original bug fix request
+   * @returns {Object} Parsed fix results
+   * @private
+   */
+  _parseBugFixResponse(response, bugFix) {
+    // Basic implementation
+    return {
+      originalCode: bugFix.code,
+      fixedCode: response,
+      timestamp: new Date().toISOString()
+    };
+  }
+  
+  /**
+   * Logs an action performed by the agent
+   * @param {string} action - Action description
+   * @param {Object} metadata - Additional metadata
+   * @private
+   */
+  _logAction(action, metadata = {}) {
+    logger.info(`DevAgent action: ${action}`);
     
-    session.actions.push(action);
-    this.memory.lastUpdated = timestamp;
+    if (this.memory) {
+      this.memory.addEntry(action, {
+        ...metadata,
+        timestamp: new Date().toISOString(),
+        agent: 'dev_agent'
+      });
+    }
+  }
+  
+  /**
+   * Calculates execution duration
+   * @param {number} startTime - Start time in milliseconds
+   * @returns {string} Formatted duration
+   * @private
+   */
+  _calculateDuration(startTime) {
+    const duration = Date.now() - startTime;
     
-    // עדכן סטטיסטיקות
-    this.memory.stats.totalActions = (this.memory.stats.totalActions || 0) + 1;
-    
-    if (result && result.success) {
-      this.memory.stats.lastSuccess = timestamp;
+    if (duration < 1000) {
+      return `${duration}ms`;
+    } else if (duration < 60000) {
+      return `${(duration / 1000).toFixed(2)}s`;
     } else {
-      this.memory.stats.lastFailure = timestamp;
+      return `${(duration / 60000).toFixed(2)}m`;
     }
-    
-    await memoryManager.saveMemory('dev_agent', this.memory);
-    
-    logger.debug(`${this.logPrefix} פעולה ${actionType} תועדה (מפגש: ${this.currentSessionId})`);
-  }
-  
-  /**
-   * חישוב משך זמן בין שני תאריכים
-   * @param {string} startTime - זמן התחלה ISO
-   * @param {string} endTime - זמן סיום ISO
-   * @returns {number} - משך זמן במילישניות
-   */
-  _calculateDuration(startTime, endTime) {
-    const start = new Date(startTime).getTime();
-    const end = new Date(endTime).getTime();
-    return end - start;
   }
 }
 
 /**
- * תת-סוכן GPT-4 המשמש לכתיבת קוד ויצירת פיתוח
+ * GPT-4 Sub-Agent for generating code and fixing bugs
  */
 class Gpt4SubAgent {
   constructor(parentAgent) {
-    this.active = false;
-    this.parentAgent = parentAgent;
-    this.preferredModel = 'gpt-4-turbo';
+    this.parent = parentAgent;
+    this.name = 'gpt4_sub_agent';
     this.provider = 'openai';
-    this.logPrefix = '[dev_gpt4]';
-    
-    logger.info(`${this.logPrefix} תת-סוכן GPT-4 אותחל`);
-  }
-  
-  /**
-   * הפעלת תת-הסוכן
-   */
-  async start() {
-    if (this.active) {
-      logger.info(`${this.logPrefix} תת-סוכן כבר פעיל`);
-      return;
-    }
-    
-    this.active = true;
-    logger.info(`${this.logPrefix} תת-סוכן GPT-4 הופעל`);
-  }
-  
-  /**
-   * כיבוי תת-הסוכן
-   */
-  async stop() {
-    if (!this.active) {
-      logger.info(`${this.logPrefix} תת-סוכן כבר כבוי`);
-      return;
-    }
-    
+    this.model = 'gpt-4';
     this.active = false;
-    logger.info(`${this.logPrefix} תת-סוכן GPT-4 כובה`);
+    
+    logger.info('GPT-4 sub-agent initialized');
   }
   
-  /**
-   * יצירת קוד חדש באמצעות GPT-4
-   */
-  async generateCode(filePath, requirements, options = {}) {
-    logger.info(`${this.logPrefix} יוצר קוד עבור: ${filePath}`);
-    
+  async start() {
+    this.active = true;
+    logger.info('GPT-4 sub-agent started');
+    return true;
+  }
+  
+  async stop() {
+    this.active = false;
+    logger.info('GPT-4 sub-agent stopped');
+    return true;
+  }
+  
+  async generateCode(task) {
     try {
-      const language = this._detectLanguage(filePath);
+      if (!this.active) {
+        await this.start();
+      }
       
-      // הכן את ה-prompt
-      const prompt = `
-        צור קוד ב-${language} עבור הקובץ: ${filePath}
-        
-        הנה הדרישות:
-        ${requirements}
-        
-        יש לספק קוד איכותי ומקצועי שמיישם את הדרישות האלה.
-        הקוד צריך להיות מתועד, לעקוב אחר העקרונות של קוד נקי, ולהיות יעיל.
-        השתמש בתבניות תכנות מודרניות ובפרקטיקות מומלצות ל-${language}.
-        
-        החזר את הקוד בלבד, ללא הסברים נוספים.
-      `;
+      logger.info(`GPT-4 sub-agent generating code for: ${task.description}`);
       
-      // קבל מודל מומלץ ממנהל הסוכנים
-      const { provider, model } = agentManager.getRecommendedModel('dev_agent', 'coding');
+      const prompt = `As an expert developer, please generate code for the following task:
+
+Description: ${task.description}
+
+${task.requirements ? `Requirements: ${task.requirements}` : ''}
+${task.context ? `Context: ${task.context}` : ''}
+${task.language ? `Language: ${task.language}` : ''}
+${task.framework ? `Framework: ${task.framework}` : ''}
+
+Provide clean, well-structured code with appropriate comments and error handling.
+Include any necessary imports or dependencies.
+Format your response as a complete, functional solution.`;
       
-      // שלח לקבלת קוד מה-AI
-      const code = await aiEngine.query(prompt, {
-        provider: provider,
-        model: model
+      const startTime = Date.now();
+      const response = await aiEngine.query(prompt, {
+        provider: this.provider,
+        model: this.model,
+        temperature: 0.2,
+        agentName: this.name
       });
       
-      // הוצא את הקוד מתוך התשובה
-      const cleanCode = this._extractCode(code, language);
+      const duration = Date.now() - startTime;
+      logger.info(`GPT-4 code generation completed in ${duration}ms`);
       
-      // שמור לקובץ
-      await this._saveToFile(filePath, cleanCode);
-      
-      logger.info(`${this.logPrefix} נוצר קוד עבור ${filePath} (${cleanCode.split('\n').length} שורות)`);
-      return cleanCode;
+      return {
+        task: task.description,
+        code: response,
+        language: task.language,
+        framework: task.framework,
+        timestamp: new Date().toISOString(),
+        model: this.model,
+        generationTime: duration
+      };
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה ביצירת קוד: ${error.message}`);
+      logger.error(`GPT-4 code generation failed: ${error.message}`);
       throw error;
     }
   }
   
-  /**
-   * יעזור לסוכן ה-Claude בתיקון באגים אם צריך
-   */
-  async fixBugs(filePath, bugReport, options = {}) {
-    logger.info(`${this.logPrefix} מתקן באגים באמצעות GPT-4 עבור: ${filePath}`);
-    
+  async fixBug(bugFix) {
     try {
-      const language = this._detectLanguage(filePath);
-      const code = await fs.readFile(filePath, 'utf-8');
+      if (!this.active) {
+        await this.start();
+      }
       
-      // הכן את ה-prompt
-      const prompt = `
-        תקן את הבאגים בקובץ ${filePath} בשפת ${language}.
-        
-        קוד נוכחי:
-        \`\`\`${language}
-        ${code}
-        \`\`\`
-        
-        דוח באגים:
-        ${bugReport}
-        
-        אנא תקן את הבאגים ושפר את הקוד. החזר את הקוד המתוקן בלבד, ללא הסברים נוספים.
-      `;
+      logger.info(`GPT-4 sub-agent fixing bug: ${bugFix.description}`);
       
-      // קבל מודל מומלץ ממנהל הסוכנים
-      const { provider, model } = agentManager.getRecommendedModel('dev_agent', 'coding');
+      const prompt = `As an expert developer, please fix the bug in this code:
+
+\`\`\`${bugFix.language || ''}
+${bugFix.code}
+\`\`\`
+
+Bug description: ${bugFix.description}
+${bugFix.errorMessage ? `Error message: ${bugFix.errorMessage}` : ''}
+${bugFix.context ? `Context: ${bugFix.context}` : ''}
+
+Please provide:
+1. The complete fixed code (not just the changed parts)
+2. A brief explanation of what was causing the bug
+3. How your solution fixes the issue`;
       
-      // שלח לקבלת קוד מתוקן מה-AI
-      const fixedCode = await aiEngine.query(prompt, {
-        provider: provider,
-        model: model
+      const startTime = Date.now();
+      const response = await aiEngine.query(prompt, {
+        provider: this.provider,
+        model: this.model,
+        temperature: 0.2,
+        agentName: this.name
       });
       
-      // הוצא את הקוד מתוך התשובה
-      const cleanCode = this._extractCode(fixedCode, language);
+      const duration = Date.now() - startTime;
+      logger.info(`GPT-4 bug fix completed in ${duration}ms`);
       
-      // שמור לקובץ
-      await this._saveToFile(filePath, cleanCode);
+      // Extract the fixed code from the response
+      const fixedCode = this._extractCodeFromResponse(response, bugFix.language);
       
-      logger.info(`${this.logPrefix} תוקנו באגים בקובץ ${filePath}`);
-      return cleanCode;
+      return {
+        originalCode: bugFix.code,
+        fixedCode: fixedCode,
+        fullResponse: response,
+        timestamp: new Date().toISOString(),
+        model: this.model,
+        fixTime: duration
+      };
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בתיקון באגים: ${error.message}`);
+      logger.error(`GPT-4 bug fix failed: ${error.message}`);
       throw error;
     }
   }
   
-  /**
-   * מיצוי קוד נקי מתוך תשובת ה-AI
-   */
-  _extractCode(aiResponse, language) {
-    // ניסיון למצוא קוד בין סימני קוד
-    const codeRegex = /```(?:[\w-]*\n)?([\s\S]*?)```/;
-    const match = aiResponse.match(codeRegex);
+  _extractCodeFromResponse(response, language) {
+    // Try to extract code between backticks with language marker
+    const codeBlockRegex = new RegExp(`\`\`\`(?:${language || ''})\\s*([\\s\\S]*?)\`\`\``, 'i');
+    const match = response.match(codeBlockRegex);
     
     if (match && match[1]) {
       return match[1].trim();
     }
     
-    // אם אין סימני קוד, החזר את כל התוכן
-    return aiResponse.trim();
-  }
-  
-  /**
-   * שמירת קוד לקובץ
-   */
-  async _saveToFile(filePath, code) {
-    // וודא שהתיקייה קיימת
-    const dirname = path.dirname(filePath);
-    await fs.ensureDir(dirname);
+    // Fallback to any code block
+    const genericCodeBlockRegex = /```(?:\w*)\s*([\s\S]*?)```/;
+    const genericMatch = response.match(genericCodeBlockRegex);
     
-    // שמור את הקוד
-    await fs.writeFile(filePath, code, 'utf-8');
-  }
-  
-  /**
-   * זיהוי שפת תכנות לפי סיומת
-   */
-  _detectLanguage(filePath) {
-    const extension = path.extname(filePath).toLowerCase().slice(1);
+    if (genericMatch && genericMatch[1]) {
+      return genericMatch[1].trim();
+    }
     
-    const langMap = {
-      'js': 'JavaScript',
-      'jsx': 'React JavaScript',
-      'ts': 'TypeScript',
-      'tsx': 'React TypeScript',
-      'py': 'Python',
-      'java': 'Java',
-      'c': 'C',
-      'cpp': 'C++',
-      'cs': 'C#',
-      'go': 'Go',
-      'rb': 'Ruby',
-      'php': 'PHP',
-      'rs': 'Rust',
-      'swift': 'Swift',
-      'kt': 'Kotlin',
-      'sh': 'Bash',
-      'html': 'HTML',
-      'css': 'CSS',
-      'scss': 'SCSS',
-      'json': 'JSON',
-      'md': 'Markdown',
-      'xml': 'XML',
-      'sql': 'SQL'
-    };
-    
-    return langMap[extension] || 'Unknown';
+    // If no code blocks found, return the whole response
+    return response;
   }
 }
 
 /**
- * תת-סוכן Claude המשמש לסקירת קוד ובדיקת איכות
+ * Claude Sub-Agent for code reviews
  */
 class ClaudeSubAgent {
   constructor(parentAgent) {
-    this.active = false;
-    this.parentAgent = parentAgent;
-    this.preferredModel = 'claude-3.7-sonnet';
+    this.parent = parentAgent;
+    this.name = 'claude_sub_agent';
     this.provider = 'anthropic';
-    this.logPrefix = '[dev_claude]';
-    
-    logger.info(`${this.logPrefix} תת-סוכן Claude אותחל`);
-  }
-  
-  /**
-   * הפעלת תת-הסוכן
-   */
-  async start() {
-    if (this.active) {
-      logger.info(`${this.logPrefix} תת-סוכן כבר פעיל`);
-      return;
-    }
-    
-    this.active = true;
-    logger.info(`${this.logPrefix} תת-סוכן Claude הופעל`);
-  }
-  
-  /**
-   * כיבוי תת-הסוכן
-   */
-  async stop() {
-    if (!this.active) {
-      logger.info(`${this.logPrefix} תת-סוכן כבר כבוי`);
-      return;
-    }
-    
+    this.model = 'claude-3-opus-20240229';
     this.active = false;
-    logger.info(`${this.logPrefix} תת-סוכן Claude כובה`);
+    
+    logger.info('Claude sub-agent initialized');
   }
   
-  /**
-   * סקירת קוד באמצעות Claude
-   */
-  async reviewCode(filePath, options = {}) {
-    logger.info(`${this.logPrefix} מבצע סקירת קוד באמצעות Claude עבור: ${filePath}`);
-    
+  async start() {
+    this.active = true;
+    logger.info('Claude sub-agent started');
+    return true;
+  }
+  
+  async stop() {
+    this.active = false;
+    logger.info('Claude sub-agent stopped');
+    return true;
+  }
+  
+  async reviewCode(codeReview) {
     try {
-      const language = this._detectLanguage(filePath);
-      const code = await fs.readFile(filePath, 'utf-8');
-      
-      // הכן את ה-prompt
-      const prompt = `
-        סקור את הקוד הבא בשפת ${language}:
-        
-        \`\`\`${language}
-        ${code}
-        \`\`\`
-        
-        אנא בצע סקירת קוד מקיפה המתייחסת ל:
-        1. איכות קוד וקריאות
-        2. עקרונות תכנות נכונים
-        3. ביצועים ויעילות
-        4. אבטחה ובאגים פוטנציאליים
-        5. תאימות ואמינות
-        
-        עבור כל בעיה, ספק הסבר והמלצה לתיקון עם דוגמת קוד.
-      `;
-      
-      // קבל מודל מומלץ ממנהל הסוכנים
-      const { provider, model } = agentManager.getRecommendedModel('dev_agent', 'review');
-      
-      // שלח לקבלת סקירה מה-AI
-      const review = await aiEngine.query(prompt, {
-        provider: provider,
-        model: model
-      });
-      
-      // בדוק אם יש בעיות חמורות שדורשות תיקון
-      const severity = this._assessReviewSeverity(review);
-      
-      // צור קובץ סקירה בצד הקובץ
-      await this._saveReview(filePath, review, severity);
-      
-      // אם יש בעיות חמורות, הפעל את תת-סוכן ה-GPT-4 לתיקון
-      if (severity === 'high' && options.autoFix !== false) {
-        logger.info(`${this.logPrefix} נמצאו בעיות חמורות, מפעיל תיקון אוטומטי`);
-        await this.parentAgent.subAgents.gpt4.fixBugs(filePath, review);
+      if (!this.active) {
+        await this.start();
       }
       
-      logger.info(`${this.logPrefix} סקירת קוד הושלמה עבור ${filePath} (חומרה: ${severity})`);
-      return { review, severity };
+      logger.info(`Claude sub-agent reviewing code: ${codeReview.description || 'unnamed review'}`);
+      
+      const prompt = `As an expert code reviewer, please review the following code:
+
+\`\`\`${codeReview.language || ''}
+${codeReview.code}
+\`\`\`
+
+${codeReview.context ? `Context: ${codeReview.context}` : ''}
+
+Provide a comprehensive code review covering:
+1. Functionality - Does it meet the requirements?
+2. Code quality - Is it well-structured and maintainable?
+3. Efficiency - Are there performance concerns?
+4. Security - Are there security vulnerabilities?
+5. Best practices - Does it follow language/framework conventions?
+
+For each issue found:
+- Describe the issue clearly
+- Rate severity (Critical, High, Medium, Low)
+- Provide a specific recommendation with code example where applicable
+- Explain why your suggestion is better
+
+Also highlight any particularly good practices in the code.`;
+      
+      const startTime = Date.now();
+      const response = await aiEngine.query(prompt, {
+        provider: this.provider,
+        model: this.model,
+        temperature: 0.2,
+        agentName: this.name
+      });
+      
+      const duration = Date.now() - startTime;
+      logger.info(`Claude code review completed in ${duration}ms`);
+      
+      return {
+        originalCode: codeReview.code,
+        review: response,
+        timestamp: new Date().toISOString(),
+        model: this.model,
+        reviewTime: duration
+      };
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בסקירת קוד: ${error.message}`);
+      logger.error(`Claude code review failed: ${error.message}`);
       throw error;
     }
   }
-  
-  /**
-   * הערכת חומרת הבעיות בסקירה
-   */
-  _assessReviewSeverity(review) {
-    const lowKeywords = ['קל לשפר', 'המלצה', 'שיפור קטן', 'שיקול'];
-    const mediumKeywords = ['יש לשפר', 'רצוי לשנות', 'בעיה', 'שיפור נדרש'];
-    const highKeywords = ['באג קריטי', 'בעיה חמורה', 'פגיעות אבטחה', 'כשל', 'שגיאה חמורה', 'דליפת זיכרון'];
-    
-    // בדוק אם יש מילות מפתח של בעיות חמורות
-    if (highKeywords.some(keyword => review.includes(keyword))) {
-      return 'high';
-    }
-    
-    // בדוק אם יש מילות מפתח של בעיות בינוניות
-    if (mediumKeywords.some(keyword => review.includes(keyword))) {
-      return 'medium';
-    }
-    
-    // אחרת, זו בעיה קלה/המלצה
-    return 'low';
-  }
-  
-  /**
-   * שמירת סקירת הקוד לקובץ
-   */
-  async _saveReview(filePath, review, severity) {
-    const reviewPath = `${filePath}.review.md`;
-    
-    const content = `# סקירת קוד: ${path.basename(filePath)}\n\n` +
-                    `**תאריך:** ${new Date().toISOString()}\n` +
-                    `**חומרת בעיות:** ${severity}\n\n` +
-                    `## סיכום הסקירה\n\n${review}`;
-    
-    await fs.writeFile(reviewPath, content, 'utf-8');
-  }
-  
-  /**
-   * זיהוי שפת תכנות לפי סיומת
-   */
-  _detectLanguage(filePath) {
-    const extension = path.extname(filePath).toLowerCase().slice(1);
-    
-    const langMap = {
-      'js': 'JavaScript',
-      'jsx': 'React JavaScript',
-      'ts': 'TypeScript',
-      'tsx': 'React TypeScript',
-      'py': 'Python',
-      'java': 'Java',
-      'c': 'C',
-      'cpp': 'C++',
-      'cs': 'C#',
-      'go': 'Go',
-      'rb': 'Ruby',
-      'php': 'PHP',
-      'rs': 'Rust',
-      'swift': 'Swift',
-      'kt': 'Kotlin',
-      'sh': 'Bash',
-      'html': 'HTML',
-      'css': 'CSS',
-      'scss': 'SCSS',
-      'json': 'JSON',
-      'md': 'Markdown',
-      'xml': 'XML',
-      'sql': 'SQL'
-    };
-    
-    return langMap[extension] || 'Unknown';
-  }
 }
 
-module.exports = new DevAgent(); 
+module.exports = DevAgent; 

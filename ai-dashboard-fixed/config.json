@@ -1,0 +1,79 @@
+{
+  "system": {
+    "agentServerUrl": "http://localhost:5001",
+    "dashboardServerPort": 3001,
+    "checkInterval": 5000,
+    "logLevel": "info",
+    "autoStartMode": true,
+    "theme": "dark",
+    "features": {
+      "workflows": true,
+      "analytics": true,
+      "chat": true,
+      "logs": true
+    }
+  },
+  "agents": {
+    "dev_agent": {
+      "displayName": "Development Agent",
+      "description": "Development Agent - Responsible for code writing and development tasks",
+      "priority": 1,
+      "icon": "code",
+      "model": "gpt-4o"
+    },
+    "qa_agent": {
+      "displayName": "QA Agent",
+      "description": "QA Agent - Responsible for code testing and software quality",
+      "priority": 2,
+      "icon": "bug",
+      "model": "claude-3.7"
+    },
+    "executor_agent": {
+      "displayName": "Executor Agent",
+      "description": "Executor Agent - Responsible for running and executing code",
+      "priority": 3,
+      "icon": "play",
+      "model": "gpt-4o"
+    },
+    "summary_agent": {
+      "displayName": "Summary Agent",
+      "description": "Summary Agent - Responsible for creating summaries and documentation",
+      "priority": 4,
+      "icon": "doc",
+      "model": "claude-3.7"
+    },
+    "git_sync_agent": {
+      "displayName": "Git Sync Agent",
+      "description": "Git Sync Agent that manages code repositories",
+      "icon": "git",
+      "priority": 5,
+      "autoRestart": true
+    },
+    "scheduler_agent": {
+      "displayName": "Scheduler Agent",
+      "description": "Scheduler Agent that manages tasks according to schedule",
+      "icon": "clock",
+      "priority": 6,
+      "autoRestart": true
+    }
+  },
+  "ui": {
+    "theme": "dark",
+    "language": "en",
+    "refreshRate": 5000,
+    "animations": true,
+    "notifications": true
+  },
+  "log": {
+    "maxSize": 10485760,
+    "maxFiles": 5,
+    "level": "info",
+    "directory": "logs"
+  },
+  "defaults": {
+    "project": {
+      "workspace": "../WORKSPACE",
+      "agents": ["dev_agent", "qa_agent", "executor_agent", "summary_agent"]
+    }
+  }
+} 

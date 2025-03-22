@@ -1,0 +1,52 @@
+{
+  "config": {
+    "name": "פריסת קוד",
+    "description": "תזרים עבודה אוטומטי לפריסת קוד",
+    "steps": [
+      {
+        "id": "verify_tests",
+        "agentId": "qa",
+        "action": "test",
+        "params": {
+          "path": "{{path}}",
+          "type": "full"
+        }
+      },
+      {
+        "id": "build",
+        "agentId": "executor",
+        "action": "build",
+        "params": {
+          "path": "{{path}}",
+          "testResults": "{{verify_tests.result}}"
+        }
+      },
+      {
+        "id": "package",
+        "agentId": "executor",
+        "action": "package",
+        "params": {
+          "buildResult": "{{build.result}}"
+        }
+      },
+      {
+        "id": "deploy",
+        "agentId": "executor",
+        "action": "deploy",
+        "params": {
+          "packageResult": "{{package.result}}",
+          "environment": "{{environment}}"
+        }
+      },
+      {
+        "id": "verify_deployment",
+        "agentId": "qa",
+        "action": "verify",
+        "params": {
+          "deployResult": "{{deploy.result}}",
+          "environment": "{{environment}}"
+        }
+      }
+    ]
+  }
+} 

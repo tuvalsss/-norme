@@ -1,130 +1,671 @@
+@import url("https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* גוף האתר */
+/* Global variables */
+:root {
+  --color-primary: #555555;
+  --color-primary-light: #666666;
+  --color-secondary: #333333;
+  --color-background: #0a0a0a;
+  --color-card: #111111;
+  --color-text: #e0e0e0;
+  --color-text-muted: #a0a0a0;
+  --color-border: #333333;
+  --border-radius: 8px;
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
+  --animation-speed: 0.3s;
+}
+
+.light-theme {
+  --primary: #444444;
+  --primary-hover: #555555;
+  --secondary: #666666;
+  --success: #444444;
+  --error: #555555;
+  --dark: #ffffff;
+  --dark-light: #f5f5f5;
+  --text: #333333;
+  --text-muted: #666666;
+  --border: #dddddd;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
 body {
-  background-color: black;
-  color: #e0e0e0;
-  font-family: 'Roboto Mono', monospace;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
+    "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--color-background);
+  color: var(--color-text);
+  direction: ltr;
+  font-size: 16px;
+  line-height: 1.5;
   overflow-x: hidden;
 }
 
-/* רקע גלקסיה נע */
-@keyframes moveStars {
-  from { background-position: 0 0; }
-  to { background-position: 1000px 1000px; }
+.dark-theme body {
+  background-color: var(--color-background);
+  color: var(--color-text);
 }
 
-.galaxy-bg {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  background: url("./galaxy.gif") repeat;
-  background-size: cover;
-  opacity: 0.2;
-  animation: moveStars 60s linear infinite;
-  z-index: -1;
+.light-theme body {
+  background-color: var(--color-background);
+  color: var(--color-text);
 }
 
-/* כפתור כללי */
-.btn {
-  background: linear-gradient(90deg, #06b6d4, #9333ea);
-  color: white;
-  padding: 10px 20px;
-  border-radius: 8px;
-  font-weight: bold;
-  transition: all 0.3s ease-in-out;
-  cursor: pointer;
-}
-.btn:hover {
-  transform: scale(1.05);
-  background: linear-gradient(90deg, #9333ea, #06b6d4);
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
+    monospace;
+  direction: ltr;
+  display: inline-block;
 }
 
-/* כפתורי פעולה (הפעל/כבה) */
-.btn-action {
-  padding: 8px 16px;
-  border-radius: 6px;
-  font-weight: bold;
-  transition: transform 0.2s ease, background 0.2s ease;
-  cursor: pointer;
-}
-.btn-action:hover {
-  transform: scale(1.05);
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem;
 }
 
-/* כרטיסיות של סוכנים */
-.agent-card {
-  background: rgba(255, 255, 255, 0.05);
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 0;
+  border-bottom: 1px solid #333;
+  margin-bottom: 2rem;
+}
+
+.dashboard-header h1 {
+  margin: 0;
+  font-size: 1.8rem;
+  color: #e0e0e0;
+}
+
+.dashboard-content {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+.card {
+  background-color: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  padding: 20px;
-  border-radius: 10px;
-  box-shadow: 0 0 15px rgba(0, 255, 255, 0.05);
-  transition: transform 0.2s ease-in-out;
-}
-.agent-card:hover {
-  transform: scale(1.02);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  transition: transform 0.2s;
 }
 
-/* פס התקדמות */
-.progress-bar {
-  background: rgba(255, 255, 255, 0.1);
-  height: 8px;
-  border-radius: 10px;
-  overflow: hidden;
-}
-.progress-bar-inner {
-  height: 100%;
-  background: linear-gradient(90deg, #06b6d4, #9333ea);
-  transition: width 0.5s ease-in-out;
+.card:hover {
+  transform: translateY(-5px);
 }
 
-/* לוגים */
-.log-box {
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.card-title {
+  font-size: 1.2rem;
+  margin: 0;
+  color: #fff;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.8rem;
+  font-weight: bold;
+}
+
+.status-badge.active {
+  background-color: #10b981;
+  color: #fff;
+}
+
+.status-badge.inactive {
+  background-color: #ef4444;
+  color: #fff;
+}
+
+.btn {
+  background: linear-gradient(90deg, #666666, #999999);
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.3s ease;
+}
+
+.btn:hover {
+  opacity: 0.9;
+  transform: scale(1.05);
+}
+
+.logs-container {
   background-color: #000;
   padding: 1rem;
-  border-radius: 8px;
-  height: 250px;
+  border-radius: 0.5rem;
   overflow-y: auto;
-  font-size: 0.85rem;
-  color: #d1d5db;
-  scrollbar-width: thin;
-  scrollbar-color: #6b7280 #1f2937;
+  max-height: 200px;
+  font-family: monospace;
+  margin-top: 1rem;
 }
 
-/* סטטוס של סוכן */
+.log-entry {
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px dashed #333;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  margin-top: 1rem;
+  overflow: hidden;
+}
+
+.progress-value {
+  height: 100%;
+  background: linear-gradient(90deg, #666666, #999999);
+  border-radius: 3px;
+  transition: width 0.5s;
+}
+
+/* אייקונים ואלמנטים נוספים */
+.icon {
+  color: #999999;
+  margin-right: 0.5rem;
+}
+
+.agent-item {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.agent-item:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.agent-item.selected {
+  background-color: rgba(150, 150, 150, 0.2);
+  border-right: 3px solid #999999;
+}
+
 .status-dot {
-  height: 10px;
-  width: 10px;
+  height: 8px;
+  width: 8px;
   border-radius: 50%;
   display: inline-block;
-  margin-right: 6px;
+  margin-right: 0.5rem;
 }
+
 .status-dot.active {
-  background-color: #22c55e;
+  background-color: #10b981;
 }
+
 .status-dot.inactive {
   background-color: #ef4444;
 }
 
-/* פאנל כללי */
-.dashboard-panel {
-  background: rgba(31, 41, 55, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
-  box-shadow: 0 0 15px rgba(0, 255, 255, 0.05);
-  padding: 20px;
-  backdrop-filter: blur(10px);
+/* תפריט */
+.menu {
+  display: flex;
+  list-style: none;
+  padding: 0;
+  margin: 0;
 }
 
-/* אפקט טעינה */
-.loading {
-  animation: blink 1s infinite alternate;
+.menu-item {
+  margin-right: 1rem;
 }
-@keyframes blink {
-  from { opacity: 0.3; }
-  to { opacity: 1; }
+
+.menu-link {
+  color: #e0e0e0;
+  text-decoration: none;
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  transition: color 0.2s;
+}
+
+.menu-link:hover,
+.menu-link.active {
+  color: #ffffff;
+}
+
+/* אנימציות */
+@keyframes pulse {
+  0% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.5;
+  }
+}
+
+.pulse {
+  animation: pulse 1.5s infinite;
+}
+
+/* כרטיסיות */
+.tabs {
+  display: flex;
+  border-bottom: 1px solid #333;
+  margin-bottom: 1rem;
+}
+
+.tab {
+  padding: 0.5rem 1rem;
+  margin-right: 0.5rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.tab:hover {
+  color: #ffffff;
+}
+
+.tab.active {
+  border-bottom: 2px solid #999999;
+  color: #ffffff;
+}
+
+/* תצוגה גמישה */
+@media (max-width: 768px) {
+  .dashboard-content {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* הגדרות סרגל גלילה מותאמות */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1a1a;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #666;
+}
+
+/* מחלקות שימושיות לסרגלי גלילה */
+.scrollbar-thin {
+  scrollbar-width: thin;
+}
+
+.scrollbar-thumb-gray-600::-webkit-scrollbar-thumb {
+  background: #4b5563;
+}
+
+.scrollbar-track-gray-900::-webkit-scrollbar-track {
+  background: #111827;
+}
+
+/* הסתרת סרגל גלילה אך השארת הפונקציונליות */
+.scrollbar-hide {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none; /* Chrome, Safari and Opera */
+}
+
+/* הנפשות */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.5s ease forwards;
+}
+
+/* עיצוב לוגו */
+.logo-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logo-image {
+  height: 120px;
+  margin-right: 1rem;
+}
+
+.light-theme .logo-image {
+  filter: grayscale(100%) brightness(0.8); /* לוגו כהה יותר לרקע בהיר */
+}
+
+/* אנימציות כללית */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideInFromBottom {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* אנימציה לטעינה */
+.loader {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-left-color: #555;
+  animation: spin 1s linear infinite;
+}
+
+/* מודיפיקטורים לטיפוגרפיה */
+.text-gradient {
+  background: linear-gradient(90deg, #d4d4d4, #a3a3a3);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.text-shadow {
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+/* סגנון צללים אלגנטי */
+.shadow-inset {
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.shadow-soft {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.shadow-sharp {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.shadow-elegant {
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2),
+    0 4px 6px -2px rgba(0, 0, 0, 0.1);
+}
+
+/* עיצוב כפתורים מודרני */
+.btn-modern {
+  background: linear-gradient(to bottom, #333, #222);
+  color: #e0e0e0;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.btn-modern:hover {
+  background: linear-gradient(to bottom, #444, #333);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.btn-modern:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.btn-modern:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(170, 170, 170, 0.25);
+}
+
+/* סגנון לחלונות מידע וכרטיסיות */
+.card-elegant {
+  background-color: #0f0f0f;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+}
+
+.card-elegant:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+  border-color: #444;
+}
+
+/* סגנונות לתגיות ותוויות */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background-color: #333;
+  color: #e0e0e0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.badge-success {
+  background-color: #444;
+}
+
+.badge-error {
+  background-color: #555;
+}
+
+.badge-warning {
+  background-color: #666;
+}
+
+/* שיפור סגנון לאינפוטים */
+.input-modern {
+  background-color: #0a0a0a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 10px 16px;
+  color: #e0e0e0;
+  transition: all 0.2s ease;
+}
+
+.input-modern:focus {
+  outline: none;
+  border-color: #555;
+  box-shadow: 0 0 0 3px rgba(85, 85, 85, 0.15);
+}
+
+.input-modern::placeholder {
+  color: #666;
+}
+
+/* סגנון טבלאות משופר */
+.table-modern {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.table-modern th {
+  background-color: #151515;
+  color: #d4d4d4;
+  font-weight: 500;
+  text-align: right;
+  padding: 12px 16px;
+  border-bottom: 1px solid #333;
+}
+
+.table-modern td {
+  padding: 12px 16px;
+  border-bottom: 1px solid #222;
+  color: #e0e0e0;
+}
+
+.table-modern tr:last-child td {
+  border-bottom: none;
+}
+
+.table-modern tr:hover td {
+  background-color: #1a1a1a;
+}
+
+/* אפקט זוהר לאלמנטים מיוחדים */
+.glow-effect {
+  position: relative;
+  overflow: hidden;
+}
+
+.glow-effect::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.1);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.glow-effect:hover::after {
+  opacity: 1;
+}
+
+/* נקודת סטטוס מעוצבת */
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 8px;
+  position: relative;
+}
+
+.status-dot::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  border-radius: 50%;
+  opacity: 0.4;
+  z-index: -1;
+}
+
+.status-dot.active {
+  background-color: #555;
+}
+
+.status-dot.active::after {
+  background-color: #555;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-dot.inactive {
+  background-color: #333;
+}
+
+/* אפקט מעבר חלק */
+.transition-smooth {
+  transition: all 0.3s cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* עיצוב נוסף של קומפוננטות */
+.nav-link {
+  color: #999;
+  text-decoration: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.nav-link:hover {
+  color: #e0e0e0;
+  background-color: #1a1a1a;
+}
+
+.nav-link.active {
+  color: #fff;
+  background-color: #222;
+  font-weight: 500;
+}
+
+/* Menu */
+.nav-menu {
+  display: flex;
+  gap: var(--spacing-md);
+}
+
+/* Loading animation */
+.loading-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
 }

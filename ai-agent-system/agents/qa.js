@@ -1,13 +1,13 @@
 const path = require('path');
 const fs = require('fs-extra');
-const { logger } = require('../core/logger');
+const logger = require('../core/logger');
 const aiEngine = require('../core/aiEngine');
 const memoryManager = require('../core/memoryManager');
 const agentManager = require('../core/agentManager');
 const { v4: uuidv4 } = require('uuid');
 
 /**
- * סוכן QA - אחראי על בדיקות איכות
+ * QA Agent - Responsible for quality assurance testing
  */
 class QaAgent {
   constructor() {
@@ -17,345 +17,691 @@ class QaAgent {
     this.currentSessionId = null;
     this.memory = null;
     
-    // הספק והמודל המועדפים לסוכן QA
-    // Claude 3.7 מצטיין בהבנת שגיאות מורכבות וניתוח קוד 
+    // Preferred provider and model for QA Agent
+    // Claude 3.7 excels at understanding complex errors and code analysis
     this.preferredProvider = 'anthropic';
     this.preferredModel = 'claude-3.7-sonnet';
     
-    logger.info(`${this.logPrefix} סוכן QA אותחל`);
+    logger.info(`${this.logPrefix} QA Agent initialized`);
   }
   
   /**
-   * הפעלת הסוכן
+   * Start the agent
    */
   async start() {
     if (this.active) {
-      logger.info(`${this.logPrefix} הסוכן כבר פעיל`);
+      logger.info(`${this.logPrefix} Agent is already active`);
       return;
     }
     
     try {
-      logger.info(`${this.logPrefix} מפעיל סוכן QA...`);
+      logger.info(`${this.logPrefix} Starting QA Agent...`);
       
-      // יצירת מזהה מפגש חדש
+      // Generate new session ID
       this.currentSessionId = `session_${uuidv4()}`;
       
-      // טען את זיכרון הסוכן
+      // Load agent memory
       this.memory = await memoryManager.loadMemory(this.name);
       
-      // תעד את התחלת המפגש
+      // Log session start
       await this._logSessionStart();
       
-      // רישום אצל מנהל הסוכנים
+      // Register with agent manager
       agentManager.registerAgent(this.name, this);
       
       this.active = true;
-      logger.info(`${this.logPrefix} סוכן QA הופעל בהצלחה (מפגש: ${this.currentSessionId})`);
+      logger.info(`${this.logPrefix} QA Agent started successfully (session: ${this.currentSessionId})`);
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בהפעלת סוכן QA: ${error.message}`);
+      logger.error(`${this.logPrefix} Error starting QA Agent: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * כיבוי הסוכן
+   * Stop the agent
    */
   async stop() {
     if (!this.active) {
-      logger.info(`${this.logPrefix} הסוכן כבר כבוי`);
+      logger.info(`${this.logPrefix} Agent is already inactive`);
       return;
     }
     
     try {
-      logger.info(`${this.logPrefix} מכבה סוכן QA...`);
+      logger.info(`${this.logPrefix} Stopping QA Agent...`);
       
-      // תעד את סיום המפגש
+      // Log session end
       await this._logSessionEnd();
       
-      // הסר רישום אצל מנהל הסוכנים
+      // Unregister from agent manager
       agentManager.unregisterAgent(this.name);
       
       this.active = false;
       this.currentSessionId = null;
-      
-      logger.info(`${this.logPrefix} סוכן QA כובה בהצלחה`);
+      logger.info(`${this.logPrefix} QA Agent stopped successfully`);
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בכיבוי סוכן QA: ${error.message}`);
+      logger.error(`${this.logPrefix} Error stopping QA Agent: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * בדיקת קוד באופן אוטומטי
-   * @param {string} filePath - נתיב לקובץ או תיקייה לבדיקה
-   * @param {Object} options - אפשרויות נוספות
-   * @returns {Promise<Object>} - תוצאות הבדיקה
+   * Validate code
+   * @param {string} code - Code to validate
+   * @param {string} language - Programming language
+   * @param {object} options - Additional options
+   * @returns {object} Validation results
    */
-  async analyzeCode(filePath, options = {}) {
+  async validateCode(code, language, options = {}) {
     if (!this.active) {
-      throw new Error('סוכן QA לא פעיל');
+      throw new Error('QA Agent is not active, please start the agent first');
     }
     
-    logger.info(`${this.logPrefix} מנתח קוד: ${filePath}`);
-    
     try {
-      const startTime = Date.now();
-      let results = {};
+      logger.info(`${this.logPrefix} Validating ${language} code...`);
       
-      // בדוק אם מדובר בקובץ בודד או תיקייה
-      const isDirectory = (await fs.stat(filePath)).isDirectory();
+      const validationOptions = {
+        checkSyntax: options.checkSyntax !== false,
+        checkStyle: options.checkStyle !== false,
+        checkSecurity: options.checkSecurity !== false,
+        checkPerformance: options.checkPerformance !== false,
+        ...options
+      };
       
-      if (isDirectory) {
-        // אם זו תיקייה, עבור על כל הקבצים בתיקייה (בעומק 1)
-        const files = await fs.readdir(filePath);
-        
-        for (const file of files) {
-          const fullPath = path.join(filePath, file);
-          
-          // דלג על קבצים שאינם טקסט (קבצי בינארי, תמונות וכו')
-          if (this._shouldSkipFile(fullPath)) {
-            continue;
-          }
-          
-          const stat = await fs.stat(fullPath);
-          
-          // דלג על תיקיות (אם לא צוינה אפשרות רקורסיבית)
-          if (stat.isDirectory() && !options.recursive) {
-            continue;
-          }
-          
-          if (stat.isFile()) {
-            results[file] = await this._analyzeFile(fullPath);
-          }
-        }
-      } else {
-        // אם זה קובץ בודד, נתח אותו
-        const fileName = path.basename(filePath);
-        results[fileName] = await this._analyzeFile(filePath);
-      }
+      // Create prompt for code validation
+      const prompt = this._createValidationPrompt(code, language, validationOptions);
       
-      const endTime = Date.now();
-      const duration = endTime - startTime;
-      
-      // תעד את פעולת הניתוח
-      await this._logAction('analyze_code', {
-        filePath,
-        options
-      }, {
-        success: true,
-        duration,
-        issuesFound: this._countTotalIssues(results)
+      // Get the response from AI
+      const response = await aiEngine.query(prompt, {
+        provider: this.preferredProvider,
+        model: this.preferredModel,
+        temperature: 0.1
       });
       
-      logger.info(`${this.logPrefix} ניתוח קוד הושלם ל: ${filePath}, משך זמן: ${duration}ms`);
+      // Parse the validation results
+      const results = this._parseValidationResults(response, language);
       
+      // Log the validation action
+      await this._logAction('validateCode', {
+        language,
+        codeLength: code.length,
+        options: validationOptions
+      }, {
+        issues: results.issues.length,
+        score: results.score
+      });
+      
+      logger.info(`${this.logPrefix} Code validation completed with ${results.issues.length} issues identified`);
+      return results;
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error validating code: ${error.message}`);
+      
+      // Log error to memory
+      await this._logAction('validateCode', {
+        language,
+        codeLength: code.length,
+        options
+      }, null, error.message);
+      
+      throw error;
+    }
+  }
+  
+  /**
+   * Test code functionality
+   * @param {string} code - Code to test
+   * @param {string} language - Programming language
+   * @param {object} testOptions - Testing options
+   * @returns {object} Test results
+   */
+  async testCode(code, language, testOptions = {}) {
+    if (!this.active) {
+      throw new Error('QA Agent is not active, please start the agent first');
+    }
+    
+    try {
+      logger.info(`${this.logPrefix} Testing ${language} code functionality...`);
+      
+      // Create prompt for code testing
+      const prompt = this._createTestingPrompt(code, language, testOptions);
+      
+      // Get the response from AI
+      const response = await aiEngine.query(prompt, {
+        provider: this.preferredProvider,
+        model: this.preferredModel,
+        temperature: 0.2
+      });
+      
+      // Parse the test results
+      const results = this._parseTestResults(response, language);
+      
+      // Log the testing action
+      await this._logAction('testCode', {
+        language,
+        codeLength: code.length,
+        testOptions
+      }, {
+        testsPassed: results.passed,
+        testsFailed: results.failed,
+        coverage: results.coverage
+      });
+      
+      logger.info(`${this.logPrefix} Code testing completed: ${results.passed} passed, ${results.failed} failed`);
+      return results;
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error testing code: ${error.message}`);
+      
+      // Log error to memory
+      await this._logAction('testCode', {
+        language,
+        codeLength: code.length,
+        testOptions
+      }, null, error.message);
+      
+      throw error;
+    }
+  }
+  
+  /**
+   * Create test cases for the provided code
+   * @param {string} code - Code to create tests for
+   * @param {string} language - Programming language
+   * @param {object} options - Test generation options
+   * @returns {object} Generated test cases
+   */
+  async createTestCases(code, language, options = {}) {
+    if (!this.active) {
+      throw new Error('QA Agent is not active, please start the agent first');
+    }
+    
+    try {
+      logger.info(`${this.logPrefix} Creating test cases for ${language} code...`);
+      
+      const testOptions = {
+        testFramework: options.testFramework || this._getDefaultTestFramework(language),
+        coverageLevel: options.coverageLevel || 'high',
+        includeEdgeCases: options.includeEdgeCases !== false,
+        ...options
+      };
+      
+      // Create prompt for test generation
+      const prompt = this._createTestGenerationPrompt(code, language, testOptions);
+      
+      // Get the response from AI
+      const response = await aiEngine.query(prompt, {
+        provider: this.preferredProvider,
+        model: this.preferredModel,
+        temperature: 0.3
+      });
+      
+      // Extract test code from the response
+      const testCode = this._extractTestCode(response, language);
+      
+      // Log the test creation action
+      await this._logAction('createTestCases', {
+        language,
+        codeLength: code.length,
+        testOptions
+      }, {
+        testCodeLength: testCode.length
+      });
+      
+      logger.info(`${this.logPrefix} Test cases created successfully (${testCode.length} characters)`);
       return {
-        results,
-        duration,
-        timestamp: new Date().toISOString()
+        testCode,
+        language,
+        framework: testOptions.testFramework
       };
     } catch (error) {
-      // תעד את הכישלון
-      await this._logAction('analyze_code', {
-        filePath,
-        options
-      }, {
-        success: false,
-        error: error.message
-      });
+      logger.error(`${this.logPrefix} Error creating test cases: ${error.message}`);
       
-      logger.error(`${this.logPrefix} שגיאה בניתוח קוד: ${error.message}`);
+      // Log error to memory
+      await this._logAction('createTestCases', {
+        language,
+        codeLength: code.length,
+        options
+      }, null, error.message);
+      
       throw error;
     }
   }
   
   /**
-   * ניתוח קובץ בודד באמצעות AI
-   * @param {string} filePath - נתיב לקובץ
-   * @returns {Promise<Object>} - תוצאות הניתוח
+   * Fix issues in code based on validation results
+   * @param {string} code - Original code
+   * @param {object} validationResults - Results from validateCode
+   * @param {string} language - Programming language
+   * @returns {object} Fixed code and summary of changes
    */
-  async _analyzeFile(filePath) {
-    // וודא שמדובר בקובץ טקסט
-    if (this._shouldSkipFile(filePath)) {
-      return { skipped: true, reason: 'קובץ לא רלוונטי לניתוח' };
+  async fixIssues(code, validationResults, language) {
+    if (!this.active) {
+      throw new Error('QA Agent is not active, please start the agent first');
     }
     
     try {
-      const code = await fs.readFile(filePath, 'utf-8');
-      const fileExtension = path.extname(filePath).toLowerCase();
-      const language = this._mapExtensionToLanguage(fileExtension);
+      logger.info(`${this.logPrefix} Fixing ${validationResults.issues.length} issues in ${language} code...`);
       
-      // הכן prompt לניתוח
-      const prompt = `
-        אנא נתח את הקוד הבא ב-${language || 'שפה לא ידועה'} וזהה בעיות אפשריות:
-        
-        \`\`\`${fileExtension}
-        ${code}
-        \`\`\`
-        
-        זהה ותאר את הבעיות הבאות (אם קיימות):
-        1. באגים ושגיאות לוגיות
-        2. בעיות ביצועים
-        3. בעיות אבטחה
-        4. בעיות מבניות ותכנון
-        5. סטיה מקונבנציות קוד מקובלות
-        
-        עבור כל בעיה, אנא ציין:
-        - תיאור מפורט של הבעיה
-        - מספר שורה (מספרים) בקוד
-        - רמת חומרה (נמוכה/בינונית/גבוהה/קריטית)
-        - פתרון מוצע עם דוגמת קוד
-        
-        החזר תשובה בפורמט JSON במבנה הבא:
-        {
-          "issues": [
-            {
-              "description": "תיאור הבעיה",
-              "lines": [מספרי שורות],
-              "severity": "חומרה",
-              "solution": "פתרון מוצע עם קוד"
-            },
-            ...
-          ],
-          "summary": "סיכום ממצאי הניתוח",
-          "score": מספר_בין_0_ל_100
-        }
-      `;
+      // Create prompt for fixing issues
+      const prompt = this._createFixPrompt(code, validationResults, language);
       
-      // קבל מודל מומלץ ממנהל הסוכנים
-      const { provider, model } = agentManager.getRecommendedModel(this.name);
-      
-      // שלח לניתוח ע"י AI
-      let response = await aiEngine.query(prompt, {
-        provider: provider || this.preferredProvider,
-        model: model || this.preferredModel
+      // Get the response from AI
+      const response = await aiEngine.query(prompt, {
+        provider: this.preferredProvider,
+        model: this.preferredModel,
+        temperature: 0.1
       });
       
-      // נסה לחלץ JSON מהתשובה
-      try {
-        // חפש אחר בלוק JSON
-        const jsonMatch = response.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-        if (jsonMatch && jsonMatch[1]) {
-          response = jsonMatch[1];
-        }
-        
-        // נקה תווים מיותרים ונסה לפרסר
-        response = response.trim();
-        const result = JSON.parse(response);
-        
-        return {
-          ...result,
-          fileSize: code.length,
-          lineCount: code.split('\n').length,
-          language: language || 'unknown'
-        };
-      } catch (parseError) {
-        logger.warn(`${this.logPrefix} שגיאה בפרסור תשובת ה-AI לקובץ ${filePath}: ${parseError.message}`);
-        
-        // אם פרסור ה-JSON נכשל, נסה לייצר תוצאה בסיסית
-        return {
-          issues: [],
-          summary: "לא ניתן היה לפרסר את תשובת ה-AI",
-          score: 50,
-          error: "שגיאת פרסור JSON",
-          rawResponse: response.substring(0, 1000) + (response.length > 1000 ? '...' : ''),
-          fileSize: code.length,
-          lineCount: code.split('\n').length,
-          language: language || 'unknown'
-        };
-      }
+      // Extract fixed code and summary of changes
+      const { fixedCode, changesSummary } = this._extractFixedCode(response, language);
+      
+      // Log the fix action
+      await this._logAction('fixIssues', {
+        language,
+        issuesCount: validationResults.issues.length,
+        originalLength: code.length
+      }, {
+        fixedLength: fixedCode.length,
+        changesCount: changesSummary.length
+      });
+      
+      logger.info(`${this.logPrefix} Code fixes applied successfully`);
+      return {
+        originalCode: code,
+        fixedCode,
+        changesSummary
+      };
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בניתוח קובץ ${filePath}: ${error.message}`);
+      logger.error(`${this.logPrefix} Error fixing code issues: ${error.message}`);
+      
+      // Log error to memory
+      await this._logAction('fixIssues', {
+        language,
+        issuesCount: validationResults.issues.length,
+        originalLength: code.length
+      }, null, error.message);
+      
       throw error;
     }
   }
   
   /**
-   * בדיקה אם יש לדלג על קובץ
-   * @param {string} filePath - נתיב לקובץ
-   * @returns {boolean} - האם יש לדלג
+   * Create validation prompt
+   * @private
    */
-  _shouldSkipFile(filePath) {
-    const ext = path.extname(filePath).toLowerCase();
-    const skipExtensions = [
-      '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg',
-      '.mp3', '.wav', '.mp4', '.avi', '.mov',
-      '.zip', '.tar', '.gz', '.rar',
-      '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-      '.bin', '.exe', '.dll', '.so', '.dylib',
-      '.ttf', '.woff', '.woff2', '.eot',
-      '.lock', '.map'
-    ];
-    
-    // דלג על קבצים עם סיומות ידועות שאינן טקסט
-    if (skipExtensions.includes(ext)) {
-      return true;
+  _createValidationPrompt(code, language, options) {
+    return `Please analyze this ${language} code for quality issues:
+
+\`\`\`${language}
+${code}
+\`\`\`
+
+Perform a comprehensive code review focusing on:
+${options.checkSyntax ? '- Syntax errors and bugs' : ''}
+${options.checkStyle ? '- Style and best practices' : ''}
+${options.checkSecurity ? '- Security vulnerabilities' : ''}
+${options.checkPerformance ? '- Performance issues' : ''}
+
+For each issue found:
+1. Identify the line number(s)
+2. Describe the problem
+3. Rate severity (Critical, High, Medium, Low)
+4. Provide a suggested fix
+
+Also provide an overall quality score from 0-100 and brief summary of the code quality.
+Format the response as JSON with the following structure:
+{
+  "score": number,
+  "summary": "string",
+  "issues": [
+    {
+      "line": number or range,
+      "description": "string",
+      "severity": "string",
+      "fix": "string"
     }
-    
-    // דלג על קבצים שמתחילים בנקודה (למשל .git, .DS_Store)
-    const baseName = path.basename(filePath);
-    if (baseName.startsWith('.')) {
-      return true;
-    }
-    
-    return false;
+  ]
+}`;
   }
   
   /**
-   * ממפה סיומת קובץ לשפת תכנות
-   * @param {string} extension - סיומת הקובץ
-   * @returns {string} - שם שפת התכנות
+   * Create testing prompt
+   * @private
    */
-  _mapExtensionToLanguage(extension) {
-    const map = {
-      '.js': 'JavaScript',
-      '.jsx': 'React JavaScript',
-      '.ts': 'TypeScript',
-      '.tsx': 'React TypeScript',
-      '.py': 'Python',
-      '.java': 'Java',
-      '.c': 'C',
-      '.cpp': 'C++',
-      '.cs': 'C#',
-      '.go': 'Go',
-      '.rb': 'Ruby',
-      '.php': 'PHP',
-      '.rs': 'Rust',
-      '.swift': 'Swift',
-      '.kt': 'Kotlin',
-      '.sh': 'Bash',
-      '.html': 'HTML',
-      '.css': 'CSS',
-      '.scss': 'SCSS',
-      '.json': 'JSON',
-      '.md': 'Markdown',
-      '.xml': 'XML',
-      '.sql': 'SQL'
-    };
-    
-    return map[extension] || null;
+  _createTestingPrompt(code, language, options) {
+    return `Please test the functionality of this ${language} code:
+
+\`\`\`${language}
+${code}
+\`\`\`
+
+${options.testCases ? `Test cases to verify:
+${options.testCases.map(tc => `- ${tc}`).join('\n')}` : 'Generate appropriate test cases to verify all functionality.'}
+
+${options.expectations ? `Expected behavior:
+${options.expectations}` : ''}
+
+For each test:
+1. Describe the test purpose
+2. Show the expected output/behavior
+3. Determine if the code would pass or fail
+4. Explain any issues found
+
+Provide code coverage estimate and overall assessment.
+Format the response as JSON with:
+{
+  "tests": [
+    {
+      "name": "string",
+      "description": "string",
+      "input": any,
+      "expectedOutput": any,
+      "actualOutput": any,
+      "passed": boolean,
+      "explanation": "string"
+    }
+  ],
+  "passed": number,
+  "failed": number,
+  "coverage": number,
+  "assessment": "string"
+}`;
   }
   
   /**
-   * ספירת סך כל הבעיות שנמצאו בתוצאות
-   * @param {Object} results - תוצאות הניתוח
-   * @returns {number} - מספר הבעיות
+   * Create test generation prompt
+   * @private
    */
-  _countTotalIssues(results) {
-    let totalIssues = 0;
+  _createTestGenerationPrompt(code, language, options) {
+    return `Generate comprehensive test cases for this ${language} code using ${options.testFramework}:
+
+\`\`\`${language}
+${code}
+\`\`\`
+
+Requirements:
+- Use ${options.testFramework} as the testing framework
+- Create tests for all functions/methods
+- Achieve ${options.coverageLevel} test coverage
+${options.includeEdgeCases ? '- Include edge cases and error handling tests' : ''}
+${options.specificFeatures ? `- Focus on testing these specific features: ${options.specificFeatures.join(', ')}` : ''}
+
+Provide only the test code, properly formatted and ready to run.`;
+  }
+  
+  /**
+   * Create fix prompt
+   * @private
+   */
+  _createFixPrompt(code, validationResults, language) {
+    const issuesText = validationResults.issues.map(issue => 
+      `- Line ${issue.line}: ${issue.description} (${issue.severity})`
+    ).join('\n');
     
-    for (const fileName in results) {
-      const fileResult = results[fileName];
-      if (fileResult && fileResult.issues && Array.isArray(fileResult.issues)) {
-        totalIssues += fileResult.issues.length;
+    return `Please fix the following issues in this ${language} code:
+
+\`\`\`${language}
+${code}
+\`\`\`
+
+Issues to fix:
+${issuesText}
+
+Please provide:
+1. The complete fixed code
+2. A summary of all changes made
+
+Ensure the fixed code is complete, ready to use, and addresses all the identified issues.`;
+  }
+  
+  /**
+   * Parse validation results
+   * @private
+   */
+  _parseValidationResults(response, language) {
+    try {
+      // Try to parse the JSON response
+      const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/) || 
+                        response.match(/\{[\s\S]*"score"[\s\S]*\}/);
+      
+      if (jsonMatch) {
+        const jsonStr = jsonMatch[1] || jsonMatch[0];
+        return JSON.parse(jsonStr);
+      }
+      
+      // If JSON parsing fails, create a structured response manually
+      const issues = [];
+      const lines = response.split('\n');
+      
+      let currentIssue = null;
+      let summary = '';
+      let score = 0;
+      
+      for (const line of lines) {
+        if (line.match(/score:?\s*(\d+)/i)) {
+          score = parseInt(line.match(/score:?\s*(\d+)/i)[1]);
+        } else if (line.match(/summary:?\s*(.*)/i)) {
+          summary = line.match(/summary:?\s*(.*)/i)[1];
+        } else if (line.match(/issue|problem|bug|error/i) && line.match(/line\s+\d+/i)) {
+          // Start of a new issue
+          if (currentIssue) {
+            issues.push(currentIssue);
+          }
+          
+          const lineMatch = line.match(/line\s+(\d+)(-(\d+))?/i);
+          const severityMatch = line.match(/(critical|high|medium|low)/i);
+          
+          currentIssue = {
+            line: lineMatch ? parseInt(lineMatch[1]) : 0,
+            description: line.replace(/^[^:]*:\s*/, ''),
+            severity: severityMatch ? severityMatch[1] : 'Medium',
+            fix: ''
+          };
+        } else if (currentIssue && line.match(/fix|solution|suggestion/i)) {
+          currentIssue.fix = line.replace(/^[^:]*:\s*/, '');
+        }
+      }
+      
+      if (currentIssue) {
+        issues.push(currentIssue);
+      }
+      
+      return {
+        score: score || 50,
+        summary: summary || 'Manual parsing of validation results',
+        issues
+      };
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error parsing validation results: ${error.message}`);
+      
+      // Return a basic structure if parsing fails
+      return {
+        score: 50,
+        summary: 'Failed to parse validation results properly',
+        issues: [{
+          line: 0,
+          description: 'Could not parse specific issues from the validation response',
+          severity: 'Medium',
+          fix: 'Review the code manually'
+        }]
+      };
+    }
+  }
+  
+  /**
+   * Parse test results
+   * @private
+   */
+  _parseTestResults(response, language) {
+    try {
+      // Try to parse the JSON response
+      const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/) || 
+                        response.match(/\{[\s\S]*"tests"[\s\S]*\}/);
+      
+      if (jsonMatch) {
+        const jsonStr = jsonMatch[1] || jsonMatch[0];
+        return JSON.parse(jsonStr);
+      }
+      
+      // If JSON parsing fails, create a structured response manually
+      const tests = [];
+      let passed = 0;
+      let failed = 0;
+      let coverage = 0;
+      let assessment = '';
+      
+      // Basic parsing logic for test results
+      const testBlocks = response.split(/Test\s+\d+|Test case/i).filter(block => block.trim());
+      
+      for (const block of testBlocks) {
+        const nameMatch = block.match(/name:?\s*([^\n]+)/i);
+        const passedMatch = block.match(/pass(ed)?|success/i);
+        
+        const test = {
+          name: nameMatch ? nameMatch[1].trim() : `Test ${tests.length + 1}`,
+          description: block.substring(0, 100).trim(),
+          input: 'Not parsed',
+          expectedOutput: 'Not parsed',
+          actualOutput: 'Not parsed',
+          passed: !!passedMatch,
+          explanation: block.trim()
+        };
+        
+        tests.push(test);
+        
+        if (test.passed) {
+          passed++;
+        } else {
+          failed++;
+        }
+      }
+      
+      // Look for coverage and assessment
+      const coverageMatch = response.match(/coverage:?\s*(\d+)%?/i);
+      if (coverageMatch) {
+        coverage = parseInt(coverageMatch[1]);
+      }
+      
+      const assessmentMatch = response.match(/assessment:?\s*([^\n]+)/i);
+      if (assessmentMatch) {
+        assessment = assessmentMatch[1].trim();
+      }
+      
+      return {
+        tests,
+        passed,
+        failed,
+        coverage: coverage || Math.round((passed / (passed + failed)) * 100) || 0,
+        assessment: assessment || `${passed} tests passed, ${failed} tests failed`
+      };
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error parsing test results: ${error.message}`);
+      
+      // Return a basic structure if parsing fails
+      return {
+        tests: [],
+        passed: 0,
+        failed: 1,
+        coverage: 0,
+        assessment: 'Failed to parse test results properly'
+      };
+    }
+  }
+  
+  /**
+   * Extract test code from response
+   * @private
+   */
+  _extractTestCode(response, language) {
+    // Try to find code blocks
+    const codeBlockMatch = response.match(new RegExp(`\`\`\`(?:${language})?\\s*([\\s\\S]*?)\\s*\`\`\``, 'i'));
+    
+    if (codeBlockMatch && codeBlockMatch[1]) {
+      return codeBlockMatch[1].trim();
+    }
+    
+    // If no code blocks found, try to extract anything that looks like code
+    const lines = response.split('\n');
+    let inCodeSection = false;
+    let codeLines = [];
+    
+    for (const line of lines) {
+      if (line.includes('import ') || line.includes('function test') || line.includes('class Test') || 
+          line.includes('describe(') || line.includes('it(') || line.includes('@Test')) {
+        inCodeSection = true;
+      }
+      
+      if (inCodeSection) {
+        codeLines.push(line);
       }
     }
     
-    return totalIssues;
+    if (codeLines.length > 0) {
+      return codeLines.join('\n');
+    }
+    
+    // If still no code found, return the whole response
+    return response;
   }
   
   /**
-   * תיעוד התחלת מפגש חדש
+   * Extract fixed code and summary from response
+   * @private
+   */
+  _extractFixedCode(response, language) {
+    // Try to find code blocks
+    const codeBlockMatch = response.match(new RegExp(`\`\`\`(?:${language})?\\s*([\\s\\S]*?)\\s*\`\`\``, 'i'));
+    let fixedCode = '';
+    let changesSummary = [];
+    
+    if (codeBlockMatch && codeBlockMatch[1]) {
+      fixedCode = codeBlockMatch[1].trim();
+      
+      // Look for a summary section
+      const summaryMatch = response.match(/(?:changes|fixes|summary):\s*([^```]*)/i);
+      
+      if (summaryMatch && summaryMatch[1]) {
+        // Split the summary into bullet points
+        changesSummary = summaryMatch[1].split('\n')
+          .map(line => line.trim())
+          .filter(line => line.startsWith('-') || line.startsWith('*') || /^\d+\./.test(line));
+      }
+    } else {
+      // If no code blocks found, just return the whole response as fixed code
+      fixedCode = response;
+    }
+    
+    // If no summary found, generate a generic one
+    if (changesSummary.length === 0) {
+      changesSummary = ['Code was modified to fix the identified issues'];
+    }
+    
+    return { fixedCode, changesSummary };
+  }
+  
+  /**
+   * Get default test framework for language
+   * @private
+   */
+  _getDefaultTestFramework(language) {
+    const frameworkMap = {
+      'javascript': 'Jest',
+      'typescript': 'Jest',
+      'python': 'pytest',
+      'java': 'JUnit',
+      'csharp': 'NUnit',
+      'c#': 'NUnit',
+      'ruby': 'RSpec',
+      'php': 'PHPUnit',
+      'go': 'testing package',
+      'rust': 'cargo test',
+      'swift': 'XCTest'
+    };
+    
+    return frameworkMap[language.toLowerCase()] || 'a standard testing framework';
+  }
+  
+  /**
+   * Log session start
+   * @private
    */
   async _logSessionStart() {
     if (!this.memory) return;
@@ -370,21 +716,17 @@ class QaAgent {
       startTime,
       endTime: null,
       actions: [],
-      status: 'active',
-      summary: null
+      status: 'active'
     };
-    
-    this.memory.stats = this.memory.stats || {};
-    this.memory.stats.totalSessions = Object.keys(this.memory.sessions).length;
-    this.memory.lastUpdated = startTime;
     
     await memoryManager.saveMemory(this.name, this.memory);
     
-    logger.debug(`${this.logPrefix} נפתח מפגש חדש (${this.currentSessionId})`);
+    logger.debug(`${this.logPrefix} New session started (${this.currentSessionId})`);
   }
   
   /**
-   * תיעוד סיום מפגש
+   * Log session end
+   * @private
    */
   async _logSessionEnd() {
     if (!this.memory || !this.currentSessionId) return;
@@ -392,44 +734,19 @@ class QaAgent {
     const session = this.memory.sessions[this.currentSessionId];
     if (!session) return;
     
-    const endTime = new Date().toISOString();
-    session.endTime = endTime;
+    session.endTime = new Date().toISOString();
     session.status = 'completed';
-    
-    // חישוב סטטיסטיקות
-    const actions = session.actions || [];
-    const actionsCount = actions.length;
-    const successCount = actions.filter(a => a.result && a.result.success).length;
-    const failureCount = actionsCount - successCount;
-    
-    // יצירת סיכום מפגש
-    session.summary = {
-      actionsCount,
-      successCount,
-      failureCount,
-      duration: this._calculateDuration(session.startTime, endTime)
-    };
-    
-    this.memory.lastUpdated = endTime;
-    
-    // עדכן סטטיסטיקות כלליות
-    if (!this.memory.stats.lastSuccess && successCount > 0) {
-      this.memory.stats.lastSuccess = endTime;
-    }
-    
-    if (!this.memory.stats.lastFailure && failureCount > 0) {
-      this.memory.stats.lastFailure = endTime;
-    }
     
     await memoryManager.saveMemory(this.name, this.memory);
     
-    logger.debug(`${this.logPrefix} מפגש נסגר (${this.currentSessionId}): ${actionsCount} פעולות`);
+    logger.debug(`${this.logPrefix} Session closed (${this.currentSessionId})`);
   }
   
   /**
-   * תיעוד פעולה
+   * Log agent action
+   * @private
    */
-  async _logAction(actionType, parameters, result) {
+  async _logAction(actionType, parameters, result, error = null) {
     if (!this.memory || !this.currentSessionId) return;
     
     const session = this.memory.sessions[this.currentSessionId];
@@ -446,37 +763,14 @@ class QaAgent {
       type: actionType,
       parameters,
       timestamp,
-      result
+      success: !error,
+      result: result || null,
+      error: error || null
     };
     
     session.actions.push(action);
-    this.memory.lastUpdated = timestamp;
-    
-    // עדכן סטטיסטיקות
-    this.memory.stats = this.memory.stats || {};
-    this.memory.stats.totalActions = (this.memory.stats.totalActions || 0) + 1;
-    
-    if (result && result.success) {
-      this.memory.stats.lastSuccess = timestamp;
-    } else {
-      this.memory.stats.lastFailure = timestamp;
-    }
     
     await memoryManager.saveMemory(this.name, this.memory);
-    
-    logger.debug(`${this.logPrefix} פעולה ${actionType} תועדה (מפגש: ${this.currentSessionId})`);
-  }
-  
-  /**
-   * חישוב משך זמן בין שני תאריכים
-   * @param {string} startTime - זמן התחלה ISO
-   * @param {string} endTime - זמן סיום ISO
-   * @returns {number} - משך זמן במילישניות
-   */
-  _calculateDuration(startTime, endTime) {
-    const start = new Date(startTime).getTime();
-    const end = new Date(endTime).getTime();
-    return end - start;
   }
 }
 

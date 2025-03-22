@@ -1,49 +1,49 @@
 const runner = require('../core/runner');
 const fileManager = require('../core/fileManager');
-const { createAgentLogger } = require('../core/logger');
+const logger = require('../core/logger');
 const path = require('path');
 const fs = require('fs-extra');
 
-// צור logger ייעודי לסוכן ההרצה
-const logger = createAgentLogger('executor_agent');
+// Create dedicated logger for the executor agent
+// const logger = createAgentLogger('executor_agent');
 
 /**
- * סוכן הרצה שאחראי על הרצת סקריפטים ותיעוד הפלט
+ * Executor agent responsible for running scripts and logging output
  */
 class ExecutorAgent {
   constructor() {
     this.name = 'executor_agent';
     this.active = false;
-    this.runningProcesses = new Map(); // מפה של תהליכים פעילים
-    this.outputBuffer = new Map(); // באפר לפלט מתהליכים
+    this.runningProcesses = new Map(); // Map of active processes
+    this.outputBuffer = new Map(); // Buffer for process output
     
-    logger.info('סוכן הרצה אותחל');
+    logger.info('Executor agent initialized');
   }
 
   /**
-   * מפעיל את הסוכן
+   * Start the agent
    * @returns {Promise<void>}
    */
   async start() {
     this.active = true;
-    logger.info('סוכן הרצה הופעל');
+    logger.info('Executor agent started');
   }
 
   /**
-   * מכבה את הסוכן ומפסיק את כל התהליכים הפעילים
+   * Stop the agent and terminate all active processes
    * @returns {Promise<void>}
    */
   async stop() {
     if (this.runningProcesses.size > 0) {
-      logger.info(`מפסיק ${this.runningProcesses.size} תהליכים פעילים`);
+      logger.info(`Stopping ${this.runningProcesses.size} active processes`);
       
-      // עבור על כל התהליכים הפעילים וסיים אותם
+      // Iterate through all active processes and terminate them
       for (const [processId, process] of this.runningProcesses.entries()) {
         try {
           process.kill();
-          logger.info(`תהליך ${processId} הופסק`);
+          logger.info(`Process ${processId} terminated`);
         } catch (error) {
-          logger.error(`שגיאה בהפסקת תהליך ${processId}: ${error.message}`);
+          logger.error(`Error terminating process ${processId}: ${error.message}`);
         }
       }
       
@@ -51,196 +51,253 @@ class ExecutorAgent {
     }
     
     this.active = false;
-    logger.info('סוכן הרצה כובה');
+    logger.info('Executor agent stopped');
   }
 
   /**
-   * מריץ פקודה חד פעמית ומחזיר את הפלט שלה
-   * @param {string} command - הפקודה להרצה
-   * @param {boolean} logOutput - האם לתעד את הפלט לקובץ לוג
-   * @returns {Promise<Object>} - הפלט מהפקודה (stdout, stderr)
+   * Execute a shell command
+   * @param {string} command - Command to execute
+   * @param {boolean} logOutput - Whether to log the output
+   * @returns {Promise<Object>} - Result of the command execution
    */
   async executeCommand(command, logOutput = true) {
-    logger.info(`מריץ פקודה חד פעמית: ${command}`);
+    if (!this.active) {
+      throw new Error('Executor agent is not active');
+    }
+    
+    logger.info(`Executing command: ${command}`);
     
     try {
-      const result = await runner.runCommand(command);
+      const { stdout, stderr, exitCode } = await runner.executeCommand(command);
+      
+      const result = {
+        command,
+        stdout,
+        stderr,
+        exitCode,
+        success: exitCode === 0,
+        timestamp: new Date().toISOString()
+      };
       
       if (logOutput) {
-        // שמור את הפלט בקובץ לוג
-        const timestamp = new Date().toISOString().replace(/:/g, '-');
-        const logFileName = `command_${timestamp}.log`;
-        const logPath = `logs/executor_agent/${logFileName}`;
-        
-        const logContent = `
-פקודה: ${command}
-זמן: ${timestamp}
-----------------------------
-פלט:
-${result.stdout}
-----------------------------
-שגיאות:
-${result.stderr || 'אין'}
-`;
-        
-        await fileManager.writeFile(logPath, logContent);
-        logger.info(`פלט הפקודה נשמר ב: ${logPath}`);
+        if (exitCode === 0) {
+          logger.info(`Command executed successfully with exit code ${exitCode}`);
+          logger.debug(`Command output: ${stdout}`);
+        } else {
+          logger.error(`Command failed with exit code ${exitCode}`);
+          logger.error(`Error output: ${stderr}`);
+        }
       }
       
       return result;
     } catch (error) {
-      logger.error(`שגיאה בהרצת פקודה: ${error.message}`);
-      throw error;
+      logger.error(`Error executing command: ${error.message}`);
+      
+      return {
+        command,
+        error: error.message,
+        success: false,
+        timestamp: new Date().toISOString()
+      };
     }
   }
 
   /**
-   * מריץ סקריפט ועוקב אחר הפלט שלו בזמן אמת
-   * @param {string} scriptPath - נתיב לסקריפט
-   * @param {string} logFile - נתיב לקובץ לוג
-   * @returns {Promise<string>} - מזהה התהליך
+   * Run a script as a background process
+   * @param {string} scriptPath - Path to the script to run
+   * @param {string} logFile - Path to log file (optional)
+   * @returns {Promise<Object>} - Process information
    */
   async runScript(scriptPath, logFile = null) {
-    logger.info(`מריץ סקריפט: ${scriptPath}`);
+    if (!this.active) {
+      throw new Error('Executor agent is not active');
+    }
+    
+    // Resolve full path
+    const fullPath = path.resolve(scriptPath);
+    
+    // Ensure the script exists
+    if (!await fs.pathExists(fullPath)) {
+      throw new Error(`Script not found: ${fullPath}`);
+    }
+    
+    logger.info(`Running script: ${fullPath}`);
+    
+    // Build command based on script type
+    const command = this._buildScriptCommand(fullPath);
+    
+    // Create output buffer for this process
+    const processId = `process_${Date.now()}`;
+    this.outputBuffer.set(processId, []);
+    
+    // Create log file if specified
+    let logStream = null;
+    if (logFile) {
+      await fs.ensureDir(path.dirname(logFile));
+      logStream = fs.createWriteStream(logFile, { flags: 'a' });
+    }
+    
+    // Handle script output
+    const handleOutput = (data) => {
+      const output = data.toString();
+      
+      // Add to buffer (limited to last 100 lines)
+      const buffer = this.outputBuffer.get(processId);
+      buffer.push(output);
+      if (buffer.length > 100) {
+        buffer.shift();
+      }
+      
+      // Write to log file if specified
+      if (logStream) {
+        logStream.write(output + '\n');
+      }
+    };
+    
+    // Handle process completion
+    const handleClose = (code) => {
+      logger.info(`Script ${fullPath} completed with exit code ${code}`);
+      
+      if (logStream) {
+        logStream.end();
+      }
+      
+      this.runningProcesses.delete(processId);
+      
+      // Keep the output buffer for a while
+      setTimeout(() => {
+        this.outputBuffer.delete(processId);
+      }, 30 * 60 * 1000); // Keep output for 30 minutes
+    };
     
     try {
-      // בדוק אם הסקריפט קיים
-      const exists = await fileManager.fileExists(scriptPath);
-      if (!exists) {
-        throw new Error(`הסקריפט ${scriptPath} אינו קיים`);
-      }
+      // Start the process
+      const process = runner.runProcess(command, {
+        cwd: path.dirname(fullPath),
+        env: { ...process.env, FORCE_COLOR: 'true' }
+      });
       
-      // אם לא צוין קובץ לוג, צור אחד
-      if (!logFile) {
-        const timestamp = new Date().toISOString().replace(/:/g, '-');
-        const scriptName = path.basename(scriptPath).split('.')[0];
-        logFile = `logs/executor_agent/${scriptName}_${timestamp}.log`;
-      }
-      
-      // צור באפר חדש לפלט התהליך
-      const processId = `${path.basename(scriptPath)}_${Date.now()}`;
-      this.outputBuffer.set(processId, []);
-      
-      // פונקציות לטיפול בפלט
-      const handleOutput = (data) => {
-        const output = data.toString();
-        // הוסף לבאפר
-        const buffer = this.outputBuffer.get(processId) || [];
-        buffer.push(output);
-        this.outputBuffer.set(processId, buffer);
-        
-        // שמור לקובץ לוג
-        fs.appendFileSync(path.join(fileManager.baseDir, logFile), output);
-        
-        logger.debug(`פלט מסקריפט ${processId}: ${output}`);
-      };
-      
-      const handleClose = (code) => {
-        logger.info(`סקריפט ${processId} הסתיים עם קוד יציאה: ${code}`);
-        this.runningProcesses.delete(processId);
-        
-        // כתוב סיכום לקובץ הלוג
-        const summary = `
-----------------------------
-סיכום הרצה:
-סקריפט: ${scriptPath}
-מזהה תהליך: ${processId}
-קוד יציאה: ${code}
-זמן סיום: ${new Date().toISOString()}
-----------------------------
-`;
-        
-        fs.appendFileSync(path.join(fileManager.baseDir, logFile), summary);
-      };
-      
-      // התחל את הסקריפט
-      const command = this._buildScriptCommand(scriptPath);
-      const process = runner.runLiveCommand(
-        command,
-        handleOutput,
-        handleOutput,
-        handleClose
-      );
-      
-      // שמור את התהליך
+      // Store the process
       this.runningProcesses.set(processId, process);
       
-      logger.info(`סקריפט ${processId} החל לרוץ. הפלט נשמר ב: ${logFile}`);
-      return processId;
+      // Set up event handlers
+      process.stdout.on('data', handleOutput);
+      process.stderr.on('data', handleOutput);
+      process.on('close', handleClose);
       
+      // Return process info
+      return {
+        processId,
+        command,
+        scriptPath: fullPath,
+        startTime: new Date().toISOString(),
+        logFile
+      };
     } catch (error) {
-      logger.error(`שגיאה בהרצת סקריפט ${scriptPath}: ${error.message}`);
+      logger.error(`Error running script: ${error.message}`);
+      
+      // Clean up
+      this.outputBuffer.delete(processId);
+      if (logStream) {
+        logStream.end();
+      }
+      
       throw error;
     }
   }
 
   /**
-   * מפסיק תהליך פעיל לפי מזהה
-   * @param {string} processId - מזהה התהליך
-   * @returns {Promise<boolean>} - האם התהליך הופסק בהצלחה
+   * Stop a running process
+   * @param {string} processId - ID of the process to stop
+   * @returns {Promise<Object>} - Result of the operation
    */
   async stopProcess(processId) {
-    logger.info(`מנסה להפסיק תהליך: ${processId}`);
-    
     if (!this.runningProcesses.has(processId)) {
-      logger.warn(`תהליך ${processId} אינו קיים או כבר הסתיים`);
-      return false;
+      throw new Error(`Process ${processId} not found or already stopped`);
     }
+    
+    logger.info(`Stopping process ${processId}`);
     
     try {
       const process = this.runningProcesses.get(processId);
       process.kill();
+      
       this.runningProcesses.delete(processId);
-      logger.info(`תהליך ${processId} הופסק בהצלחה`);
-      return true;
+      
+      return {
+        processId,
+        success: true,
+        message: `Process ${processId} stopped successfully`,
+        timestamp: new Date().toISOString()
+      };
     } catch (error) {
-      logger.error(`שגיאה בהפסקת תהליך ${processId}: ${error.message}`);
-      return false;
+      logger.error(`Error stopping process ${processId}: ${error.message}`);
+      
+      return {
+        processId,
+        success: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
     }
   }
 
   /**
-   * מחזיר את סטטוס התהליכים הפעילים
-   * @returns {Promise<Object>} - מידע על התהליכים הפעילים
+   * Get agent status
+   * @returns {Promise<Object>} - Status information
    */
   async getStatus() {
-    const processes = [];
+    const runningProcesses = [];
     
     for (const [processId, process] of this.runningProcesses.entries()) {
-      processes.push({
-        id: processId,
-        startTime: processId.split('_')[1],
-        lastOutput: this._getLastOutput(processId)
-      });
+      // Check if process is still running
+      let isRunning = true;
+      try {
+        // Check if kill signal 0 can be sent (doesn't actually kill the process)
+        isRunning = process.kill(0);
+      } catch (error) {
+        isRunning = false;
+      }
+      
+      if (isRunning) {
+        runningProcesses.push({
+          processId,
+          lastOutput: this._getLastOutput(processId)
+        });
+      } else {
+        // Clean up dead processes
+        this.runningProcesses.delete(processId);
+      }
     }
     
     return {
       active: this.active,
-      runningProcesses: processes,
-      total: processes.length
+      activeProcesses: runningProcesses.length,
+      processes: runningProcesses
     };
   }
 
   /**
-   * מחזיר את הפלט האחרון של תהליך מהבאפר
-   * @param {string} processId - מזהה התהליך
-   * @returns {string} - הפלט האחרון
+   * Get last few lines of output from a process
+   * @param {string} processId - ID of the process
+   * @returns {string} - Last few lines of output
    * @private
    */
   _getLastOutput(processId) {
     const buffer = this.outputBuffer.get(processId);
+    
     if (!buffer || buffer.length === 0) {
       return '';
     }
     
-    // החזר את שורות הפלט האחרונות (עד 5)
-    return buffer.slice(-5).join('\n');
+    // Return the last 10 lines or less
+    return buffer.slice(-10).join('\n');
   }
 
   /**
-   * בונה את פקודת ההרצה המתאימה לסוג הסקריפט
-   * @param {string} scriptPath - נתיב לסקריפט
-   * @returns {string} - פקודת ההרצה
+   * Build the appropriate command to run a script based on file extension
+   * @param {string} scriptPath - Path to the script
+   * @returns {string} - Command to execute
    * @private
    */
   _buildScriptCommand(scriptPath) {
@@ -254,12 +311,23 @@ ${result.stderr || 'אין'}
       case '.sh':
         return `bash ${scriptPath}`;
       case '.bat':
+      case '.cmd':
         return scriptPath;
-      case '.ps1':
-        return `powershell -File ${scriptPath}`;
       default:
-        // נסה להריץ כקובץ הרצה
-        return scriptPath;
+        // Try to determine if it's an executable
+        try {
+          const stat = fs.statSync(scriptPath);
+          const isExecutable = !!(stat.mode & 0o111); // Check if executable bit is set
+          
+          if (isExecutable) {
+            return scriptPath;
+          }
+        } catch (error) {
+          // Ignore errors
+        }
+        
+        // Default to node
+        return `node ${scriptPath}`;
     }
   }
 }

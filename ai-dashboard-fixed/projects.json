@@ -1,0 +1,1 @@
+[{"id": "123", "name": "Demo Project", "description": "Project for testing the system", "path": "123", "status": "active", "created": "2024-03-21T12:00:00.000Z", "updated": "2024-03-21T12:00:00.000Z", "agents": ["dev_agent", "qa_agent", "executor_agent", "summary_agent"]}] 

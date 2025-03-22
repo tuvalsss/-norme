@@ -1,0 +1,54 @@
+{
+  "config": {
+    "name": "בדיקות וביקורת קוד",
+    "description": "תזרים עבודה לבדיקה אוטומטית וביקורת קוד",
+    "steps": [
+      {
+        "id": "static_analysis",
+        "agentId": "qa",
+        "action": "analyze",
+        "params": {
+          "path": "{{path}}",
+          "type": "static"
+        }
+      },
+      {
+        "id": "unit_test",
+        "agentId": "qa",
+        "action": "test",
+        "params": {
+          "path": "{{path}}",
+          "type": "unit"
+        }
+      },
+      {
+        "id": "code_review",
+        "agentId": "dev",
+        "action": "review",
+        "params": {
+          "path": "{{path}}",
+          "staticResults": "{{static_analysis.result}}",
+          "testResults": "{{unit_test.result}}"
+        }
+      },
+      {
+        "id": "fix_issues",
+        "agentId": "dev",
+        "action": "implement",
+        "params": {
+          "path": "{{path}}",
+          "reviewResults": "{{code_review.result}}"
+        }
+      },
+      {
+        "id": "final_test",
+        "agentId": "qa",
+        "action": "test",
+        "params": {
+          "path": "{{path}}",
+          "type": "full"
+        }
+      }
+    ]
+  }
+} 

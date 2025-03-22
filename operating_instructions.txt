@@ -1,0 +1,36 @@
+=============================================
+        OPERATION INSTRUCTIONS - AI AGENT SYSTEM
+=============================================
+
+Starting the system with PowerShell:
+
+1. For simple startup:
+   - Right-click on the 'start_powershell.ps1' file
+   - Select "Run with PowerShell"
+   
+2. For interactive startup with menu:
+   - Right-click on the 'start_interactive.ps1' file
+   - Select "Run with PowerShell"
+   
+The first time you run these files, a security alert may appear.
+Click on "Run anyway" or "Run once" to approve the operation.
+
+If an Execution Policy error appears:
+1. Open PowerShell as administrator (Run as Administrator)
+2. Enter the following command: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+3. Type 'Y' to confirm
+4. Try running the files again
+
+=============================================
+            SYSTEM DETAILS
+=============================================
+
+- Agent System Server: Port 5001
+- Dashboard Server: Port 3001
+- Dashboard Interface: http://localhost:3000
+
+To shut down the system in interactive mode:
+- Choose option 2 in the menu
+
+To shut down the system in normal mode:
+- Close all PowerShell windows that opened 

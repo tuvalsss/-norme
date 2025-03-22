@@ -1,37 +1,37 @@
 const aiEngine = require('../core/aiEngine');
 const fileManager = require('../core/fileManager');
-const { createAgentLogger } = require('../core/logger');
+const logger = require('../core/logger');
 const path = require('path');
 const fs = require('fs-extra');
 const memoryManager = require('../core/memoryManager');
 const agentManager = require('../core/agentManager');
 const { v4: uuidv4 } = require('uuid');
 
-// ייבוא סוכנים אחרים לקבלת סטטוס
+// Import other agents for status retrieval
 const devAgent = require('./dev_agent');
 const qaAgent = require('./qa');
 const executorAgent = require('./executor');
 
-// צור logger ייעודי לסוכן הסיכום
-const logger = createAgentLogger('summary_agent');
+// Create a dedicated logger for the summary agent
+// const logger = createAgentLogger('summary_agent');
 
 /**
- * סוכן סיכום שאוסף סטטוס, כותב לוגים ודוחות
+ * Summary agent that collects status, writes logs and reports
  */
 class SummaryAgent {
   constructor() {
     this.name = 'summary_agent';
     this.active = false;
-    this.provider = 'anthropic'; // ספק ברירת מחדל
-    this.model = 'claude-3-haiku';  // מודל ברירת מחדל (קל יותר לסיכומים)
+    this.provider = 'anthropic'; // Default provider
+    this.model = 'claude-3-haiku';  // Default model (lighter for summaries)
     this.isRunning = false;
     this.currentSummaryId = null;
     
-    logger.info('סוכן סיכום אותחל');
+    logger.info('Summary agent initialized');
   }
 
   /**
-   * מפעיל את הסוכן
+   * Starts the agent
    * @returns {Promise<void>}
    */
   async start() {
@@ -39,859 +39,996 @@ class SummaryAgent {
     this.isRunning = true;
     this.currentSummaryId = `summary_${uuidv4()}`;
     
-    // תיעוד במנהל הזיכרון
+    // Document in memory manager
     if (memoryManager && typeof memoryManager.logAction === 'function') {
       memoryManager.logAction(this.name, 'Summary agent initialized');
     }
     
-    logger.info('סוכן סיכום הופעל');
+    logger.info('Summary agent started');
     return true;
   }
 
   /**
-   * מכבה את הסוכן
+   * Stops the agent
    * @returns {Promise<void>}
    */
   async stop() {
     this.active = false;
     this.isRunning = false;
     
-    // תיעוד במנהל הזיכרון
+    // Document in memory manager
     if (memoryManager && typeof memoryManager.logAction === 'function') {
       memoryManager.logAction(this.name, 'Summary agent stopped');
     }
     
-    logger.info('סוכן סיכום כובה');
+    logger.info('Summary agent stopped');
     return true;
   }
 
   /**
-   * אוסף את סטטוס כל הסוכנים
-   * @returns {Promise<Object>} - סטטוס כל הסוכנים
+   * Collects status from all active agents in the system
+   * @returns {Promise<Object>} Object with status information from all agents
    */
   async collectAgentsStatus() {
-    logger.info('אוסף סטטוס מכל הסוכנים');
+    logger.info('Collecting status from all agents');
     
-    try {
-      const status = {
-        timestamp: new Date().toISOString(),
-        agents: {
-          dev: {
-            active: devAgent.active,
-            provider: devAgent.provider,
-            model: devAgent.model
-          },
-          qa: {
-            active: qaAgent.active,
-            provider: qaAgent.provider,
-            model: qaAgent.model
-          },
-          executor: await executorAgent.getStatus()
-        },
-        system: {
-          uptime: process.uptime(),
-          memory: process.memoryUsage(),
-        }
+    const result = {
+      timestamp: new Date().toISOString(),
+      agents: {}
+    };
+    
+    // Get list of all registered agents
+    const agents = agentManager.getAgents();
+    
+    for (const agentName in agents) {
+      const agent = agents[agentName];
+      
+      // Skip the summary agent itself
+      if (agentName === this.name) continue;
+      
+      result.agents[agentName] = {
+        active: agent.active || false,
+        lastAction: null,
+        memory: null
       };
       
-      // שמור את הסטטוס לקובץ לוג
-      const logFileName = `status_${new Date().toISOString().replace(/:/g, '-')}.json`;
-      const logPath = `logs/summary_agent/${logFileName}`;
-      await fileManager.writeFile(logPath, JSON.stringify(status, null, 2));
+      // Try to get more detailed information if the agent has a getStatus method
+      if (agent.getStatus && typeof agent.getStatus === 'function') {
+        try {
+          const status = await agent.getStatus();
+          result.agents[agentName] = {
+            ...result.agents[agentName],
+            ...status
+          };
+        } catch (error) {
+          logger.error(`Error getting status from ${agentName}: ${error.message}`);
+        }
+      }
       
-      logger.info(`סטטוס נאסף ונשמר ב: ${logPath}`);
-      return status;
-      
-    } catch (error) {
-      logger.error(`שגיאה באיסוף סטטוס: ${error.message}`);
-      throw error;
+      // Get agent memory if available
+      try {
+        const memory = await memoryManager.loadMemory(agentName);
+        if (memory) {
+          result.agents[agentName].memory = {
+            sessionCount: Object.keys(memory.sessions || {}).length,
+            lastSession: memory.sessions ? Object.values(memory.sessions).pop() : null
+          };
+        }
+      } catch (error) {
+        logger.error(`Error loading memory for ${agentName}: ${error.message}`);
+      }
     }
+    
+    return result;
   }
 
   /**
-   * מנתח קבצי לוג וכותב דוח סיכום
-   * @param {string} logDir - תיקיית הלוגים לניתוח
-   * @param {string} outputFile - קובץ הפלט לדוח
-   * @returns {Promise<string>} - תוכן הדוח
+   * Generates a summary of the system logs
+   * @param {string} logDir - Directory containing logs
+   * @param {string} outputFile - Output file for the summary
+   * @returns {Promise<string>} Path to the generated summary file
    */
   async generateLogSummary(logDir = 'logs', outputFile = 'logs/summary.md') {
-    logger.info(`מנתח לוגים בתיקייה: ${logDir}`);
+    logger.info(`Generating log summary from ${logDir} to ${outputFile}`);
     
     try {
-      // אסוף את כל קבצי הלוג
+      // Collect log files
       const logFiles = await this._collectLogFiles(logDir);
       
-      // אם אין קבצי לוג, החזר הודעה
-      if (logFiles.length === 0) {
-        const noLogsMessage = 'לא נמצאו קבצי לוג לניתוח.';
-        await fileManager.writeFile(outputFile, noLogsMessage);
-        return noLogsMessage;
+      if (!logFiles || logFiles.length === 0) {
+        logger.warn('No log files found');
+        return null;
       }
       
-      // קרא תוכן מדגמי מקבצי הלוג (מוגבל לכמה שורות מכל קובץ)
-      const logSamples = {};
-      const MAX_LINES = 50; // מקסימום שורות לקריאה מכל קובץ
+      // Create a summary object
+      const summary = {
+        timestamp: new Date().toISOString(),
+        logFiles: logFiles.length,
+        recentLogs: []
+      };
       
-      for (const file of logFiles.slice(0, 20)) { // הגבל ל-20 קבצים
+      // Process the most recent log files (limit to 10)
+      const recentLogFiles = logFiles.slice(0, 10);
+      
+      for (const logFile of recentLogFiles) {
         try {
-          const content = await fileManager.readFile(file);
-          // קח רק את השורות הראשונות
-          const lines = content.split('\n').slice(0, MAX_LINES);
-          logSamples[file] = lines.join('\n');
+          const content = await fs.readFile(logFile.path, 'utf8');
+          
+          // Extract the last 20 lines from each log
+          const lines = content.split('\n');
+          const lastLines = lines.slice(-20);
+          
+          summary.recentLogs.push({
+            file: logFile.name,
+            size: logFile.size,
+            lastUpdated: logFile.mtime,
+            lastLines
+          });
         } catch (error) {
-          logger.warn(`לא ניתן לקרוא קובץ לוג ${file}: ${error.message}`);
-          logSamples[file] = 'שגיאה בקריאת קובץ';
+          logger.error(`Error reading log file ${logFile.path}: ${error.message}`);
         }
       }
       
-      // הכן את ה-prompt לסיכום
-      const prompt = `
-        אנא נתח את קבצי הלוג הבאים וספק סיכום תמציתי.
-        עבור כל קובץ לוג, תן סטטיסטיקות מפתח ומידע רלוונטי.
-        
-        קבצי לוג לניתוח:
-        ${Object.keys(logSamples).map(file => `- ${file}`).join('\n')}
-        
-        דוגמאות תוכן של קובצי הלוג:
-        ${Object.entries(logSamples).map(([file, content]) => 
-          `## ${file}\n\`\`\`\n${content}\n\`\`\``
-        ).join('\n\n')}
-        
-        אנא כלול בסיכום:
-        1. מספר כולל של קבצי לוג
-        2. פעילות עיקרית לפי סוג סוכן
-        3. שגיאות או בעיות שזוהו
-        4. סטטיסטיקות חשובות (כמו הצלחות/כשלונות)
-        5. המלצות להמשך על סמך הממצאים
-        
-        פלט בפורמט Markdown.
-      `;
+      // Use AI to generate insights from the logs
+      let insights = '';
       
-      // הפעל את מנוע ה-AI לסיכום
-      const summary = await aiEngine.query(prompt, {
-        provider: this.provider,
-        model: this.model
-      });
+      try {
+        // Prepare the prompt for the AI
+        const prompt = `Analyze the following log data and provide a concise summary of what's happening in the system, any errors or issues that need attention, and any patterns you notice:
+        
+        ${JSON.stringify(summary, null, 2)}
+        
+        Provide your analysis in markdown format with the following sections:
+        1. System Status Overview
+        2. Issues Detected (if any)
+        3. Recent Activity Summary
+        `;
+        
+        // Call the AI engine
+        const aiResponse = await aiEngine.generateText({
+          provider: this.provider,
+          model: this.model,
+          prompt,
+          max_tokens: 1000
+        });
+        
+        insights = aiResponse.trim();
+      } catch (error) {
+        logger.error(`Error generating AI insights for log summary: ${error.message}`);
+        insights = "Error generating AI insights. Please check the logs manually.";
+      }
       
-      // הוסף כותרת וזמן
-      const fullSummary = `# סיכום לוגים
-תאריך: ${new Date().toLocaleDateString()}
-זמן: ${new Date().toLocaleTimeString()}
+      // Create the final summary
+      const finalSummary = `# System Log Summary
+      
+Generated: ${new Date().toLocaleString()}
 
-${summary}`;
+## Files Analyzed
+Total log files: ${summary.logFiles}
+
+${insights}
+
+`;
       
-      // שמור את הסיכום
-      await fileManager.writeFile(outputFile, fullSummary);
+      // Ensure the output directory exists
+      await fs.ensureDir(path.dirname(outputFile));
       
-      logger.info(`סיכום לוגים נוצר ונשמר ב: ${outputFile}`);
-      return fullSummary;
+      // Write the summary to the output file
+      await fs.writeFile(outputFile, finalSummary, 'utf8');
       
+      logger.info(`Log summary written to ${outputFile}`);
+      
+      return outputFile;
     } catch (error) {
-      logger.error(`שגיאה ביצירת סיכום לוגים: ${error.message}`);
+      logger.error(`Error generating log summary: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * יוצר דוח סטטוס פרויקט מלא
-   * @param {string} projectPath - נתיב לתיקיית הפרויקט
-   * @param {string} outputFile - קובץ הפלט לדוח
-   * @returns {Promise<string>} - תוכן הדוח
+   * Generates a report about the project
+   * @param {string} projectPath - Path to the project
+   * @param {string} outputFile - Output file for the report
+   * @returns {Promise<string>} Path to the generated report file
    */
   async generateProjectReport(projectPath = 'workspace', outputFile = 'logs/project_report.md') {
-    logger.info(`מייצר דוח פרויקט עבור: ${projectPath}`);
+    logger.info(`Generating project report for ${projectPath}`);
     
     try {
-      // אסוף מידע על מבנה הפרויקט
-      const filesInfo = await this._getProjectStructure(projectPath);
+      // Verify the project path exists
+      const fullProjectPath = path.resolve(projectPath);
+      if (!await fs.pathExists(fullProjectPath)) {
+        throw new Error(`Project path ${fullProjectPath} does not exist`);
+      }
       
-      // אסוף סטטוס סוכנים
-      const agentsStatus = await this.collectAgentsStatus();
+      // Collect project structure
+      const structure = await this._getProjectStructure(fullProjectPath);
       
-      // הכן את ה-prompt
-      const prompt = `
-        אנא צור דוח סטטוס פרויקט מפורט בהתבסס על המידע הבא:
-        
-        ## מבנה הפרויקט
-        ${JSON.stringify(filesInfo, null, 2)}
-        
-        ## סטטוס סוכנים
-        ${JSON.stringify(agentsStatus, null, 2)}
-        
-        הדוח צריך לכלול:
-        1. סקירה כללית של הפרויקט
-        2. מידע על הקבצים והתיקיות העיקריים
-        3. סטטוס עדכני של הסוכנים השונים
-        4. בעיות ידועות או אתגרים
-        5. צעדים מומלצים להמשך
-        
-        פלט בפורמט Markdown עם כותרות, סעיפים ובליטים.
-      `;
+      // Get status from dev agent if available
+      let devStatus = {};
+      if (devAgent && devAgent.active && typeof devAgent.getProjectStatus === 'function') {
+        try {
+          devStatus = await devAgent.getProjectStatus(projectPath);
+        } catch (error) {
+          logger.error(`Error getting project status from dev agent: ${error.message}`);
+        }
+      }
       
-      // הפעל את מנוע ה-AI ליצירת הדוח
-      const report = await aiEngine.query(prompt, {
-        provider: this.provider,
-        model: this.model
-      });
+      // Use AI to generate insights about the project
+      let insights = '';
       
-      // הוסף כותרת ראשית ומידע על זמן
-      const fullReport = `# דוח סטטוס פרויקט
-תאריך: ${new Date().toLocaleDateString()}
-זמן: ${new Date().toLocaleTimeString()}
+      try {
+        // Prepare the prompt for the AI
+        const prompt = `Analyze the following project structure and provide a concise summary of the project, its structure, and any recommendations:
+        
+        ${JSON.stringify(structure, null, 2)}
+        
+        ${Object.keys(devStatus).length > 0 ? `Additional project information: ${JSON.stringify(devStatus, null, 2)}` : ''}
+        
+        Provide your analysis in markdown format with the following sections:
+        1. Project Overview
+        2. Directory Structure Analysis
+        3. Code Quality Assessment (if information is available)
+        4. Recommendations (if any)
+        `;
+        
+        // Call the AI engine
+        const aiResponse = await aiEngine.generateText({
+          provider: this.provider,
+          model: this.model,
+          prompt,
+          max_tokens: 1500
+        });
+        
+        insights = aiResponse.trim();
+      } catch (error) {
+        logger.error(`Error generating AI insights for project report: ${error.message}`);
+        insights = "Error generating AI insights. Please analyze the project structure manually.";
+      }
+      
+      // Create the final report
+      const finalReport = `# Project Report: ${path.basename(fullProjectPath)}
+      
+Generated: ${new Date().toLocaleString()}
 
-${report}`;
+## Project Path
+${fullProjectPath}
+
+${insights}
+
+`;
       
-      // שמור את הדוח
-      await fileManager.writeFile(outputFile, fullReport);
+      // Ensure the output directory exists
+      await fs.ensureDir(path.dirname(outputFile));
       
-      logger.info(`דוח פרויקט נוצר ונשמר ב: ${outputFile}`);
-      return fullReport;
+      // Write the report to the output file
+      await fs.writeFile(outputFile, finalReport, 'utf8');
       
+      logger.info(`Project report written to ${outputFile}`);
+      
+      return outputFile;
     } catch (error) {
-      logger.error(`שגיאה ביצירת דוח פרויקט: ${error.message}`);
+      logger.error(`Error generating project report: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * יצירת סיכום לפעילות סוכן מסוים
-   * @param {string} agentName - שם הסוכן לסיכום
-   * @param {object} options - אפשרויות סיכום
-   * @param {number} options.timePeriod - תקופת זמן לסיכום בשעות (ברירת מחדל: 24)
-   * @param {boolean} options.includeInsights - האם לכלול תובנות (ברירת מחדל: true)
-   * @param {string} options.format - פורמט התוצאה (json/text/markdown, ברירת מחדל: markdown)
-   * @returns {Promise<object>} - תוצאות הסיכום
+   * Generates a summary of an agent's activities
+   * @param {string} agentName - Name of the agent
+   * @param {Object} options - Options for the summary
+   * @returns {Promise<Object>} Summary data
    */
   async generateAgentSummary(agentName, options = {}) {
-    if (!this.active) {
-      await this.start();
-    }
-
+    logger.info(`Generating summary for agent: ${agentName}`);
+    
+    const { 
+      period = 'all', // 'day', 'week', 'month', 'all'
+      format = 'markdown', // 'markdown', 'json', 'text'
+      detailed = false
+    } = options;
+    
     try {
-      const timePeriod = options.timePeriod || 24;
-      const includeInsights = options.includeInsights !== false;
-      const format = options.format || 'markdown';
+      // Load agent memory
+      const memory = await memoryManager.loadMemory(agentName);
       
-      if (memoryManager && typeof memoryManager.logAction === 'function') {
-        memoryManager.logAction(
-          this.name, 
-          `Generating summary for agent ${agentName} for the last ${timePeriod} hours`
-        );
-      }
-
-      // טעינת זיכרון הסוכן
-      const agentMemory = await memoryManager.loadAgentMemory(agentName);
-      if (!agentMemory || !agentMemory.sessions || !agentMemory.actions) {
-        throw new Error(`No memory found for agent ${agentName}`);
-      }
-
-      // סינון פעולות מהתקופה הרלוונטית
-      const cutoffTime = new Date(Date.now() - (timePeriod * 60 * 60 * 1000));
-      const recentActions = agentMemory.actions
-        .filter(action => new Date(action.timestamp) > cutoffTime)
-        .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-
-      if (recentActions.length === 0) {
+      if (!memory || !memory.sessions) {
+        logger.warn(`No memory data found for agent: ${agentName}`);
         return {
-          agent: agentName,
-          period: `${timePeriod} hours`,
+          agentName,
           timestamp: new Date().toISOString(),
-          summary: 'No activity during this period',
-          actions: 0
+          error: 'No memory data found for this agent'
         };
       }
-
-      // חישוב מדדים סטטיסטיים
-      const stats = this._calculateStats(recentActions);
-
-      // בניית מסד נתונים לסיכום
-      const summaryData = {
-        agent: agentName,
-        period: `${timePeriod} hours`,
-        timestamp: new Date().toISOString(),
-        stats,
-        actions: recentActions.length,
-        firstAction: recentActions[0].timestamp,
-        lastAction: recentActions[recentActions.length - 1].timestamp
-      };
-
-      // הוספת תובנות אם נדרש
-      if (includeInsights) {
-        summaryData.insights = await this._generateInsights(agentName, recentActions, stats);
+      
+      // Filter sessions based on the specified period
+      const now = new Date();
+      const filteredSessions = Object.values(memory.sessions).filter(session => {
+        if (!session.startTime) return false;
+        
+        const sessionDate = new Date(session.startTime);
+        
+        switch (period) {
+          case 'day':
+            return sessionDate >= new Date(now.setDate(now.getDate() - 1));
+          case 'week':
+            return sessionDate >= new Date(now.setDate(now.getDate() - 7));
+          case 'month':
+            return sessionDate >= new Date(now.setMonth(now.getMonth() - 1));
+          case 'all':
+          default:
+            return true;
+        }
+      });
+      
+      // Extract actions from the filtered sessions
+      const actions = filteredSessions.flatMap(session => 
+        (session.actions || []).map(action => ({
+          ...action,
+          sessionId: session.id || 'unknown'
+        }))
+      );
+      
+      // Calculate statistics
+      const stats = this._calculateStats(actions);
+      
+      // Generate AI insights
+      let insights = null;
+      if (actions.length > 0) {
+        insights = await this._generateInsights(agentName, actions, stats);
       }
-
-      // פורמט התוצאה
+      
+      // Create the summary object
+      const summaryData = {
+        agentName,
+        timestamp: new Date().toISOString(),
+        period,
+        sessionCount: filteredSessions.length,
+        actionCount: actions.length,
+        firstSession: filteredSessions.length > 0 ? filteredSessions[0].startTime : null,
+        lastSession: filteredSessions.length > 0 ? filteredSessions[filteredSessions.length - 1].startTime : null,
+        stats,
+        insights
+      };
+      
+      // Add detailed data if requested
+      if (detailed) {
+        summaryData.sessions = filteredSessions;
+        summaryData.actions = actions;
+      }
+      
+      // Format the summary according to the specified format
       const formattedSummary = await this._formatSummary(summaryData, format);
       
-      // שמירה בזיכרון
-      if (memoryManager && typeof memoryManager.logAction === 'function') {
-        await memoryManager.logAction(
-          this.name, 
-          `Generated summary for agent ${agentName}`, 
-          true, 
-          { summaryId: this.currentSummaryId }
-        );
-      }
-
-      return formattedSummary;
+      return {
+        ...summaryData,
+        formatted: formattedSummary
+      };
     } catch (error) {
-      if (memoryManager && typeof memoryManager.logAction === 'function') {
-        memoryManager.logAction(
-          this.name, 
-          `Error generating summary for agent ${agentName}: ${error.message}`, 
-          false
-        );
-      }
+      logger.error(`Error generating summary for agent ${agentName}: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * יצירת סיכום מערכת כולל
-   * @param {object} options - אפשרויות סיכום
-   * @param {number} options.timePeriod - תקופת זמן לסיכום בשעות (ברירת מחדל: 24)
-   * @param {boolean} options.includeInsights - האם לכלול תובנות (ברירת מחדל: true)
-   * @param {string} options.format - פורמט התוצאה (json/text/markdown, ברירת מחדל: markdown)
-   * @returns {Promise<object>} - תוצאות הסיכום
+   * Generates a summary of the entire system
+   * @param {Object} options - Options for the summary
+   * @returns {Promise<Object>} System summary data
    */
   async generateSystemSummary(options = {}) {
+    logger.info('Generating system summary');
+    
+    const { 
+      period = 'day', // 'day', 'week', 'month', 'all'
+      format = 'markdown', // 'markdown', 'json', 'text'
+      detailed = false
+    } = options;
+    
+    try {
+      // Get list of all agents
+      const agents = agentManager.getAgents();
+      const agentNames = Object.keys(agents);
+      
+      // Collect agent summaries
+      const agentSummaries = {};
+      
+      for (const agentName of agentNames) {
+        try {
+          // Skip generating detailed summaries to keep the system summary concise
+          const agentSummary = await this.generateAgentSummary(agentName, {
+            period,
+            format: 'json', // Always use JSON for internal processing
+            detailed: false
+          });
+          
+          agentSummaries[agentName] = agentSummary;
+        } catch (error) {
+          logger.error(`Error generating summary for agent ${agentName}: ${error.message}`);
+          agentSummaries[agentName] = {
+            error: error.message
+          };
+        }
+      }
+      
+      // Collect current agent status
+      const agentStatus = await this.collectAgentsStatus();
+      
+      // Create system summary object
+      const systemSummary = {
+        timestamp: new Date().toISOString(),
+        period,
+        agentCount: agentNames.length,
+        activeAgents: Object.values(agents).filter(agent => agent.active).length,
+        agentSummaries,
+        agentStatus
+      };
+      
+      // Generate AI insights for the system
+      systemSummary.insights = await this._generateSystemInsights(systemSummary);
+      
+      // Format the summary according to the specified format
+      const formattedSummary = await this._formatSystemSummary(systemSummary, format);
+      
+      return {
+        ...systemSummary,
+        formatted: formattedSummary
+      };
+    } catch (error) {
+      logger.error(`Error generating system summary: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Reports an issue for tracking
+   * @param {string} issueType - Type of issue
+   * @param {Object} issueData - Data about the issue
+   * @returns {Promise<Object>} Issue report data
+   */
+  async reportIssue(issueType, issueData) {
+    logger.info(`Reporting issue of type: ${issueType}`);
+    
+    try {
+      // Ensure the agent is active
+      if (!this.active) {
+        await this.start();
+      }
+      
+      // Create issue report
+      const report = {
+        id: `issue_${uuidv4()}`,
+        type: issueType,
+        timestamp: new Date().toISOString(),
+        data: issueData,
+        status: 'reported'
+      };
+      
+      // Save to memory
+      const memory = await memoryManager.loadMemory('system_issues') || { issues: [] };
+      memory.issues.push(report);
+      await memoryManager.saveMemory('system_issues', memory);
+      
+      // Save detailed report to file
+      const issueDir = path.join('logs', 'issues');
+      await fs.ensureDir(issueDir);
+      
+      const reportFile = path.join(issueDir, `${report.id}.json`);
+      await fs.writeJson(reportFile, report, { spaces: 2 });
+      
+      logger.info(`Issue reported and saved to ${reportFile}`);
+      
+      // Log to summary agent's memory
+      await this.logEvent('issue_reported', {
+        issueId: report.id,
+        issueType,
+        timestamp: report.timestamp
+      });
+      
+      return report;
+    } catch (error) {
+      logger.error(`Error reporting issue: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Logs an event to the summary agent's memory
+   * @param {string} eventType - Type of event
+   * @param {Object} eventData - Data about the event
+   */
+  async logEvent(eventType, eventData) {
+    // Make sure the agent is active
     if (!this.active) {
       await this.start();
     }
-
-    try {
-      const timePeriod = options.timePeriod || 24;
-      const includeInsights = options.includeInsights !== false;
-      const format = options.format || 'markdown';
-      
-      // רשימת הסוכנים לסיכום
-      const agentNames = ['dev_agent', 'qa_agent', 'executor_agent', 'git_sync_agent'];
-      
-      // צור סיכום לכל סוכן
-      const agentSummaries = {};
-      for (const agentName of agentNames) {
-        try {
-          const agentSummary = await this.generateAgentSummary(
-            agentName, 
-            { timePeriod, includeInsights, format: 'json' }
-          );
-          agentSummaries[agentName] = agentSummary;
-        } catch (error) {
-          logger.warn(`שגיאה בסיכום הסוכן ${agentName}: ${error.message}`);
-          agentSummaries[agentName] = { error: error.message };
-        }
-      }
-      
-      // בנה סיכום מערכת מלא
-      const systemSummary = {
-        timestamp: new Date().toISOString(),
-        period: `${timePeriod} hours`,
-        agents: agentSummaries,
-        system: {
-          uptime: process.uptime(),
-          memory: process.memoryUsage()
-        }
-      };
-      
-      // הוסף תובנות מערכתיות אם נדרש
-      if (includeInsights) {
-        systemSummary.insights = await this._generateSystemInsights(systemSummary);
-      }
-      
-      // פורמט לפלט הרצוי
-      if (format === 'json') {
-        return systemSummary;
-      } else {
-        return this._formatSystemSummary(systemSummary, format);
-      }
-    } catch (error) {
-      logger.error(`שגיאה ביצירת סיכום מערכת: ${error.message}`);
-      throw error;
-    }
-  }
-  
-  /**
-   * מדווח על בעיה או תקלה במערכת
-   * @param {string} issueType - סוג הבעיה
-   * @param {Object} issueData - נתוני הבעיה
-   * @returns {Promise<void>}
-   */
-  async reportIssue(issueType, issueData) {
-    try {
-      logger.info(`מדווח על בעיה מסוג: ${issueType}`);
-      
-      // תיעוד הבעיה בלוג
-      const issueReport = {
-        type: issueType,
-        timestamp: new Date().toISOString(),
-        data: issueData
-      };
-      
-      // שמירת הדיווח
-      const reportFileName = `issue_${issueType}_${new Date().toISOString().replace(/:/g, '-')}.json`;
-      const reportPath = `logs/issues/${reportFileName}`;
-      
-      // וודא שתיקיית היעד קיימת
-      await fs.ensureDir(path.dirname(reportPath));
-      
-      // שמור את הדוח
-      await fs.writeJson(reportPath, issueReport, { spaces: 2 });
-      
-      // תיעוד בזיכרון
-      if (memoryManager && typeof memoryManager.logAction === 'function') {
-        await memoryManager.logAction(
-          this.name,
-          `Reported issue: ${issueType}`,
-          false,
-          { issueType, reportPath }
-        );
-      }
-      
-      logger.info(`דוח בעיה נשמר ב: ${reportPath}`);
-    } catch (error) {
-      logger.error(`שגיאה בדיווח על בעיה: ${error.message}`);
-      throw error;
-    }
+    
+    const event = {
+      type: eventType,
+      timestamp: new Date().toISOString(),
+      data: eventData
+    };
+    
+    // Log to memory
+    const memory = await memoryManager.loadMemory(this.name) || { events: [] };
+    if (!memory.events) memory.events = [];
+    memory.events.push(event);
+    await memoryManager.saveMemory(this.name, memory);
+    
+    logger.debug(`Event logged: ${eventType}`);
+    return event;
   }
 
   /**
-   * אוסף את כל קבצי הלוג מתיקייה
-   * @param {string} logDir - תיקיית הלוגים
-   * @returns {Promise<string[]>} - רשימת נתיבים לקבצי הלוג
+   * Collects log files from a directory
+   * @param {string} logDir - Directory containing logs
+   * @returns {Promise<Array>} Array of log file objects
    * @private
    */
   async _collectLogFiles(logDir) {
     const logFiles = [];
     
     async function scanDir(dir) {
-      const items = await fileManager.listFiles(dir);
+      const entries = await fs.readdir(dir, { withFileTypes: true });
       
-      for (const item of items) {
-        if (item.isDirectory) {
-          // סרוק תיקיות משנה
-          await scanDir(item.path);
-        } else if (item.name.endsWith('.log') || 
-                   item.name.endsWith('.json') || 
-                   item.name.endsWith('.md')) {
-          logFiles.push(item.path);
+      for (const entry of entries) {
+        const entryPath = path.join(dir, entry.name);
+        
+        if (entry.isDirectory()) {
+          await scanDir(entryPath);
+        } else if (entry.isFile() && (entry.name.endsWith('.log') || entry.name.endsWith('.txt'))) {
+          const stats = await fs.stat(entryPath);
+          
+          logFiles.push({
+            name: entry.name,
+            path: entryPath,
+            size: stats.size,
+            mtime: stats.mtime
+          });
         }
       }
     }
     
     await scanDir(logDir);
+    
+    // Sort by modification time, newest first
+    logFiles.sort((a, b) => b.mtime - a.mtime);
+    
     return logFiles;
   }
 
   /**
-   * מקבל מידע על מבנה פרויקט
-   * @param {string} projectDir - תיקיית הפרויקט
-   * @returns {Promise<Object>} - מידע על מבנה הפרויקט
+   * Gets the structure of a project directory
+   * @param {string} projectDir - Project directory
+   * @returns {Promise<Object>} Project structure object
    * @private
    */
   async _getProjectStructure(projectDir) {
-    try {
-      const result = {
-        path: projectDir,
-        files: [],
-        dirs: [],
-        summary: {}
-      };
+    const structure = {
+      name: path.basename(projectDir),
+      path: projectDir,
+      size: 0,
+      type: 'directory',
+      children: []
+    };
+    
+    async function scanDir(dir, isRoot = false) {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      const result = [];
       
-      // אסוף מידע על קבצים
-      async function scanDir(dir, isRoot = false) {
-        const items = await fileManager.listFiles(dir);
-        
-        const fileTypes = {};
-        let totalFiles = 0;
-        let totalDirs = 0;
-        
-        for (const item of items) {
-          const relativePath = path.relative(projectDir, item.path);
-          
-          if (item.isDirectory) {
-            totalDirs++;
-            
-            // הוסף את התיקייה לרשימה אם זו תיקיית השורש
-            if (isRoot) {
-              result.dirs.push({
-                name: item.name,
-                path: relativePath
-              });
-            }
-            
-            // סרוק תיקיות משנה (עד לעומק מסוים)
-            if (relativePath.split(path.sep).length < 5) {
-              await scanDir(item.path);
-            }
-          } else {
-            totalFiles++;
-            
-            // ספור את סיומות הקבצים
-            const ext = path.extname(item.name).toLowerCase();
-            fileTypes[ext] = (fileTypes[ext] || 0) + 1;
-            
-            // הוסף קבצים מיוחדים לרשימה
-            if (isRoot && (
-                item.name === 'README.md' || 
-                item.name === 'package.json' || 
-                item.name === 'requirements.txt' || 
-                item.name === '.gitignore'
-              )) {
-              result.files.push({
-                name: item.name,
-                path: relativePath,
-                size: item.size
-              });
-            }
-          }
-        }
-        
-        // עדכן את הסיכום
-        Object.entries(fileTypes).forEach(([ext, count]) => {
-          result.summary[ext] = (result.summary[ext] || 0) + count;
-        });
-        
-        result.summary.totalFiles = (result.summary.totalFiles || 0) + totalFiles;
-        result.summary.totalDirs = (result.summary.totalDirs || 0) + totalDirs;
+      // Skip node_modules and other large standard directories
+      if (isRoot) {
+        const skipDirs = ['node_modules', '.git', 'dist', 'build', 'coverage'];
+        entries = entries.filter(entry => !skipDirs.includes(entry.name));
       }
       
-      await scanDir(projectDir, true);
-      return result;
+      for (const entry of entries) {
+        const entryPath = path.join(dir, entry.name);
+        
+        // Skip hidden files
+        if (entry.name.startsWith('.') && !isRoot) continue;
+        
+        if (entry.isDirectory()) {
+          // For directories, scan recursively
+          const children = await scanDir(entryPath);
+          
+          // Calculate directory size based on children
+          const size = children.reduce((total, child) => total + (child.size || 0), 0);
+          
+          result.push({
+            name: entry.name,
+            path: entryPath,
+            type: 'directory',
+            size,
+            children
+          });
+        } else if (entry.isFile()) {
+          // For files, get stats
+          const stats = await fs.stat(entryPath);
+          const ext = path.extname(entry.name).toLowerCase();
+          
+          // Determine file type based on extension
+          let fileType = 'unknown';
+          if (['.js', '.ts', '.jsx', '.tsx'].includes(ext)) fileType = 'javascript';
+          else if (['.html', '.css'].includes(ext)) fileType = 'web';
+          else if (['.json', '.yaml', '.yml', '.xml'].includes(ext)) fileType = 'config';
+          else if (['.md', '.txt'].includes(ext)) fileType = 'documentation';
+          
+          result.push({
+            name: entry.name,
+            path: entryPath,
+            type: 'file',
+            fileType,
+            extension: ext,
+            size: stats.size,
+            modified: stats.mtime
+          });
+        }
+      }
       
-    } catch (error) {
-      logger.error(`שגיאה באיסוף מידע על מבנה הפרויקט: ${error.message}`);
-      return { error: error.message };
+      return result;
     }
+    
+    structure.children = await scanDir(projectDir, true);
+    structure.size = structure.children.reduce((total, child) => total + (child.size || 0), 0);
+    
+    // Add summary info
+    const fileTypes = {};
+    let totalFiles = 0;
+    
+    function countFiles(items) {
+      for (const item of items) {
+        if (item.type === 'file') {
+          totalFiles++;
+          fileTypes[item.fileType] = (fileTypes[item.fileType] || 0) + 1;
+        } else if (item.children) {
+          countFiles(item.children);
+        }
+      }
+    }
+    
+    countFiles(structure.children);
+    
+    structure.summary = {
+      totalFiles,
+      fileTypes,
+      totalSize: structure.size
+    };
+    
+    return structure;
   }
-  
+
   /**
-   * חישוב סטטיסטיקות מפעולות הסוכן
-   * @param {Array} actions - פעולות הסוכן
-   * @returns {Object} - סטטיסטיקות
+   * Calculates statistics from agent actions
+   * @param {Array} actions - List of agent actions
+   * @returns {Object} Statistics object
    * @private
    */
   _calculateStats(actions) {
     const stats = {
-      total: actions.length,
-      byResult: { success: 0, failure: 0, neutral: 0 },
-      byType: {}
+      totalActions: actions.length,
+      actionsByType: {},
+      actionsByCategory: {},
+      successRate: 0,
+      avgDuration: 0
     };
     
-    for (const action of actions) {
-      // ספור לפי תוצאה
-      if (action.success === true) {
-        stats.byResult.success++;
-      } else if (action.success === false) {
-        stats.byResult.failure++;
-      } else {
-        stats.byResult.neutral++;
-      }
+    if (actions.length === 0) return stats;
+    
+    // Count actions by type
+    actions.forEach(action => {
+      const type = action.type || 'unknown';
+      stats.actionsByType[type] = (stats.actionsByType[type] || 0) + 1;
       
-      // ספור לפי סוג פעולה
-      const actionDesc = action.description || 'unknown';
-      const actionType = this._categorizeAction(actionDesc);
-      stats.byType[actionType] = (stats.byType[actionType] || 0) + 1;
+      // Categorize actions
+      const category = this._categorizeAction(action.description || action.type || '');
+      stats.actionsByCategory[category] = (stats.actionsByCategory[category] || 0) + 1;
+    });
+    
+    // Calculate success rate
+    const successfulActions = actions.filter(action => 
+      action.result && action.result.success === true
+    ).length;
+    
+    stats.successRate = actions.length > 0 ? (successfulActions / actions.length) * 100 : 0;
+    
+    // Calculate average duration if available
+    const actionsWithDuration = actions.filter(action => 
+      action.result && typeof action.result.duration === 'number'
+    );
+    
+    if (actionsWithDuration.length > 0) {
+      const totalDuration = actionsWithDuration.reduce((sum, action) => 
+        sum + action.result.duration
+      , 0);
+      
+      stats.avgDuration = totalDuration / actionsWithDuration.length;
     }
     
     return stats;
   }
-  
+
   /**
-   * קטגוריזציה של פעולת סוכן לפי תיאור
-   * @param {string} description - תיאור הפעולה
-   * @returns {string} - קטגוריה
+   * Categorizes an action based on its description
+   * @param {string} description - Action description
+   * @returns {string} Category name
    * @private
    */
   _categorizeAction(description) {
     description = description.toLowerCase();
     
-    if (description.includes('initialize') || description.includes('started')) {
+    if (description.includes('start') || description.includes('initialize') || description.includes('init')) {
       return 'initialization';
-    } else if (description.includes('create') || description.includes('generating')) {
-      return 'creation';
-    } else if (description.includes('analyze') || description.includes('checking')) {
+    } else if (description.includes('stop') || description.includes('shutdown') || description.includes('exit')) {
+      return 'shutdown';
+    } else if (description.includes('analyze') || description.includes('review') || description.includes('check')) {
       return 'analysis';
-    } else if (description.includes('fix') || description.includes('repair')) {
-      return 'fixing';
-    } else if (description.includes('test') || description.includes('testing')) {
-      return 'testing';
-    } else if (description.includes('report') || description.includes('summary')) {
-      return 'reporting';
+    } else if (description.includes('fix') || description.includes('repair') || description.includes('resolve')) {
+      return 'fixes';
+    } else if (description.includes('generate') || description.includes('create') || description.includes('build')) {
+      return 'generation';
+    } else if (description.includes('sync') || description.includes('pull') || description.includes('push')) {
+      return 'synchronization';
+    } else if (description.includes('execute') || description.includes('run') || description.includes('perform')) {
+      return 'execution';
     } else {
       return 'other';
     }
   }
-  
+
   /**
-   * יצירת תובנות מפעולות סוכן
-   * @param {string} agentName - שם הסוכן
-   * @param {Array} actions - פעולות הסוכן
-   * @param {Object} stats - סטטיסטיקות
-   * @returns {Promise<Array>} - תובנות
+   * Generates insights from agent actions using AI
+   * @param {string} agentName - Name of the agent
+   * @param {Array} actions - List of agent actions
+   * @param {Object} stats - Statistics object
+   * @returns {Promise<string>} Insights text
    * @private
    */
   async _generateInsights(agentName, actions, stats) {
     try {
-      // הכן את ה-prompt לניתוח
-      const prompt = `
-        אנא נתח את הפעולות הבאות של סוכן ה-AI בשם "${agentName}" וספק עד 5 תובנות משמעותיות.
-        
-        ## סטטיסטיקות פעולות
-        ${JSON.stringify(stats, null, 2)}
-        
-        ## דוגמאות לפעולות אחרונות (עד 10)
-        ${JSON.stringify(actions.slice(-10), null, 2)}
-        
-        אנא צור רשימה של עד 5 תובנות או מסקנות מנותחות. 
-        לכל תובנה ציין:
-        1. כותרת התובנה (קצרה וממצה)
-        2. תיאור קצר שמסביר את התובנה עם נתונים תומכים מהמידע
-        3. רמת חשיבות (HIGH/MEDIUM/LOW)
-        
-        פורמט JSON בלבד. לדוגמה:
-        [
-          {
-            "title": "פעילות הסוכן מתרכזת בניתוח קוד",
-            "description": "70% מהפעולות מתמקדות בניתוח קוד, בעוד רק 20% בתיקון בעיות",
-            "importance": "HIGH"
-          }
-        ]
-      `;
+      // Prepare a summary of actions for the AI
+      const recentActions = actions.slice(-20); // Use only the 20 most recent actions
       
-      // הפעל את מנוע ה-AI לניתוח והפקת תובנות
-      const insightsText = await aiEngine.query(prompt, {
+      const actionSummary = recentActions.map(action => ({
+        type: action.type,
+        timestamp: action.timestamp,
+        description: action.description,
+        success: action.result ? action.result.success : null,
+        error: action.result && action.result.error ? action.result.error : null
+      }));
+      
+      // Create prompt for the AI
+      const prompt = `As an AI assistant, analyze the following data about the agent "${agentName}" and provide insights:
+
+Statistics:
+${JSON.stringify(stats, null, 2)}
+
+Recent actions:
+${JSON.stringify(actionSummary, null, 2)}
+
+Please provide insights about:
+1. What is this agent primarily doing?
+2. How successful has it been in its actions?
+3. Are there any patterns or issues you can identify?
+4. What recommendations would you give for improving the agent's performance?
+
+Provide your analysis in 3-5 short paragraphs, focusing on the most important observations.`;
+      
+      // Call the AI engine
+      const aiResponse = await aiEngine.generateText({
         provider: this.provider,
-        model: this.model
+        model: this.model,
+        prompt,
+        max_tokens: 800
       });
       
-      // נסה לפרסר את התשובה כ-JSON
-      try {
-        return JSON.parse(insightsText);
-      } catch (error) {
-        logger.warn(`שגיאה בפירסור תובנות: ${error.message}`);
-        
-        // אם הפירסור נכשל, נסה להחזיר תובנה בסיסית
-        return [{
-          title: "ניתוח לא זמין",
-          description: "לא ניתן לפרסר את התובנות שהופקו",
-          importance: "LOW"
-        }];
-      }
+      return aiResponse.trim();
     } catch (error) {
-      logger.error(`שגיאה בהפקת תובנות: ${error.message}`);
-      return [];
+      logger.error(`Error generating insights: ${error.message}`);
+      return "Error generating insights with AI. Please review the agent's activity manually.";
     }
   }
-  
+
   /**
-   * יצירת תובנות מערכתיות
-   * @param {Object} systemSummary - סיכום מערכת
-   * @returns {Promise<Array>} - תובנות מערכתיות
+   * Generates insights about the system using AI
+   * @param {Object} systemSummary - System summary object
+   * @returns {Promise<string>} Insights text
    * @private
    */
   async _generateSystemInsights(systemSummary) {
     try {
-      // הכן את ה-prompt לניתוח
-      const prompt = `
-        אנא נתח את סיכום המערכת הבא וספק עד 5 תובנות מערכתיות חשובות.
-        
-        ## סיכום מערכת
-        ${JSON.stringify(systemSummary, null, 2)}
-        
-        אנא צור רשימה של עד 5 תובנות או מסקנות ברמה המערכתית.
-        לכל תובנה ציין:
-        1. כותרת התובנה (קצרה וממצה)
-        2. תיאור קצר שמסביר את התובנה עם נתונים תומכים מהמידע
-        3. רמת חשיבות (HIGH/MEDIUM/LOW)
-        4. המלצות אופציונאליות
-        
-        פורמט JSON בלבד.
-      `;
+      // Prepare a simplified summary for the AI
+      const simplifiedSummary = {
+        agentCount: systemSummary.agentCount,
+        activeAgents: systemSummary.activeAgents,
+        timestamp: systemSummary.timestamp,
+        period: systemSummary.period,
+        agentSummaries: {}
+      };
       
-      // הפעל את מנוע ה-AI לניתוח והפקת תובנות
-      const insightsText = await aiEngine.query(prompt, {
+      // Simplify agent summaries
+      for (const agentName in systemSummary.agentSummaries) {
+        const summary = systemSummary.agentSummaries[agentName];
+        
+        simplifiedSummary.agentSummaries[agentName] = {
+          actionCount: summary.actionCount || 0,
+          sessionCount: summary.sessionCount || 0,
+          successRate: summary.stats ? summary.stats.successRate : null,
+          lastSession: summary.lastSession,
+          error: summary.error
+        };
+      }
+      
+      // Create prompt for the AI
+      const prompt = `As an AI assistant, analyze the following system summary data and provide insights:
+
+System Summary:
+${JSON.stringify(simplifiedSummary, null, 2)}
+
+Agent Status:
+${JSON.stringify(systemSummary.agentStatus.agents, null, 2)}
+
+Please provide insights about:
+1. Overall system health and activity levels
+2. Which agents are most active and successful
+3. Any issues or anomalies detected
+4. Recommendations for improving system performance
+5. What appears to be the main focus of the system recently
+
+Provide your analysis in 3-5 short paragraphs, focusing on the most important observations.`;
+      
+      // Call the AI engine
+      const aiResponse = await aiEngine.generateText({
         provider: this.provider,
-        model: this.model
+        model: this.model,
+        prompt,
+        max_tokens: 1000
       });
       
-      // נסה לפרסר את התשובה כ-JSON
-      try {
-        return JSON.parse(insightsText);
-      } catch (error) {
-        logger.warn(`שגיאה בפירסור תובנות מערכת: ${error.message}`);
-        
-        // אם הפירסור נכשל, נסה להחזיר תובנה בסיסית
-        return [{
-          title: "ניתוח מערכת לא זמין",
-          description: "לא ניתן לפרסר את התובנות המערכתיות שהופקו",
-          importance: "LOW"
-        }];
-      }
+      return aiResponse.trim();
     } catch (error) {
-      logger.error(`שגיאה בהפקת תובנות מערכתיות: ${error.message}`);
-      return [];
+      logger.error(`Error generating system insights: ${error.message}`);
+      return "Error generating system insights with AI. Please review the system summary manually.";
     }
   }
-  
+
   /**
-   * פורמט סיכום לפי הפורמט הרצוי
-   * @param {Object} summaryData - נתוני הסיכום
-   * @param {string} format - פורמט (json/text/markdown)
-   * @returns {Promise<any>} - הסיכום המפורמט
+   * Formats the summary according to the specified format
+   * @param {Object} summaryData - Summary data
+   * @param {string} format - Output format (markdown, json, text)
+   * @returns {Promise<string>} Formatted summary
    * @private
    */
   async _formatSummary(summaryData, format) {
-    if (format === 'json') {
-      return summaryData;
-    }
-    
-    let formattedSummary = '';
-    
-    if (format === 'markdown') {
-      formattedSummary = `# סיכום פעילות סוכן ${summaryData.agent}
-      
-## מידע כללי
-- **תקופה**: ${summaryData.period}
-- **זמן**: ${new Date(summaryData.timestamp).toLocaleString()}
-- **סך פעולות**: ${summaryData.actions}
-- **פעולה ראשונה**: ${new Date(summaryData.firstAction).toLocaleString()}
-- **פעולה אחרונה**: ${new Date(summaryData.lastAction).toLocaleString()}
+    switch (format.toLowerCase()) {
+      case 'json':
+        return JSON.stringify(summaryData, null, 2);
+        
+      case 'text':
+        return `Agent Summary: ${summaryData.agentName}
+Generated: ${new Date(summaryData.timestamp).toLocaleString()}
+Period: ${summaryData.period}
 
-## סטטיסטיקות
-- **הצלחות**: ${summaryData.stats.byResult.success} (${Math.round(summaryData.stats.byResult.success / summaryData.stats.total * 100)}%)
-- **כשלונות**: ${summaryData.stats.byResult.failure} (${Math.round(summaryData.stats.byResult.failure / summaryData.stats.total * 100)}%)
+Sessions: ${summaryData.sessionCount}
+Actions: ${summaryData.actionCount}
+First Session: ${summaryData.firstSession ? new Date(summaryData.firstSession).toLocaleString() : 'N/A'}
+Last Session: ${summaryData.lastSession ? new Date(summaryData.lastSession).toLocaleString() : 'N/A'}
 
-### לפי סוג פעולה
-${Object.entries(summaryData.stats.byType).map(([type, count]) => 
-  `- **${type}**: ${count} (${Math.round(count / summaryData.stats.total * 100)}%)`
-).join('\n')}
+Statistics:
+- Success Rate: ${summaryData.stats.successRate.toFixed(2)}%
+- Average Duration: ${summaryData.stats.avgDuration.toFixed(2)} ms
+
+Action Types:
+${Object.entries(summaryData.stats.actionsByType).map(([type, count]) => `- ${type}: ${count}`).join('\n')}
+
+Categories:
+${Object.entries(summaryData.stats.actionsByCategory).map(([category, count]) => `- ${category}: ${count}`).join('\n')}
+
+Insights:
+${summaryData.insights || 'No insights available.'}
 `;
+        
+      case 'markdown':
+      default:
+        return `# Agent Summary: ${summaryData.agentName}
 
-      // הוסף תובנות אם קיימות
-      if (summaryData.insights && summaryData.insights.length > 0) {
-        formattedSummary += `\n## תובנות\n`;
-        
-        summaryData.insights.forEach(insight => {
-          formattedSummary += `### ${insight.title} (${insight.importance})\n${insight.description}\n\n`;
-        });
-      }
-    } else {
-      // פורמט טקסט פשוט
-      formattedSummary = `סיכום פעילות סוכן ${summaryData.agent}\n\n`;
-      formattedSummary += `תקופה: ${summaryData.period}\n`;
-      formattedSummary += `זמן: ${new Date(summaryData.timestamp).toLocaleString()}\n`;
-      formattedSummary += `סך פעולות: ${summaryData.actions}\n\n`;
-      
-      formattedSummary += `סטטיסטיקות:\n`;
-      formattedSummary += `- הצלחות: ${summaryData.stats.byResult.success} (${Math.round(summaryData.stats.byResult.success / summaryData.stats.total * 100)}%)\n`;
-      formattedSummary += `- כשלונות: ${summaryData.stats.byResult.failure} (${Math.round(summaryData.stats.byResult.failure / summaryData.stats.total * 100)}%)\n\n`;
-      
-      // הוסף תובנות אם קיימות
-      if (summaryData.insights && summaryData.insights.length > 0) {
-        formattedSummary += `תובנות:\n`;
-        
-        summaryData.insights.forEach(insight => {
-          formattedSummary += `- ${insight.title} (${insight.importance}): ${insight.description}\n`;
-        });
-      }
+*Generated: ${new Date(summaryData.timestamp).toLocaleString()}*
+*Period: ${summaryData.period}*
+
+## Overview
+- **Sessions:** ${summaryData.sessionCount}
+- **Actions:** ${summaryData.actionCount}
+- **First Session:** ${summaryData.firstSession ? new Date(summaryData.firstSession).toLocaleString() : 'N/A'}
+- **Last Session:** ${summaryData.lastSession ? new Date(summaryData.lastSession).toLocaleString() : 'N/A'}
+
+## Statistics
+- **Success Rate:** ${summaryData.stats.successRate.toFixed(2)}%
+- **Average Duration:** ${summaryData.stats.avgDuration.toFixed(2)} ms
+
+### Action Types
+${Object.entries(summaryData.stats.actionsByType).map(([type, count]) => `- **${type}:** ${count}`).join('\n')}
+
+### Categories
+${Object.entries(summaryData.stats.actionsByCategory).map(([category, count]) => `- **${category}:** ${count}`).join('\n')}
+
+## Insights
+${summaryData.insights || 'No insights available.'}
+`;
     }
-    
-    return formattedSummary;
   }
-  
+
   /**
-   * פורמט סיכום מערכת לפי הפורמט הרצוי
-   * @param {Object} systemSummary - נתוני סיכום המערכת
-   * @param {string} format - פורמט (text/markdown)
-   * @returns {Promise<string>} - הסיכום המפורמט
+   * Formats the system summary according to the specified format
+   * @param {Object} systemSummary - System summary data
+   * @param {string} format - Output format (markdown, json, text)
+   * @returns {Promise<string>} Formatted summary
    * @private
    */
   async _formatSystemSummary(systemSummary, format) {
-    let formattedSummary = '';
-    
-    if (format === 'markdown') {
-      formattedSummary = `# סיכום מערכת
-      
-## מידע כללי
-- **תקופה**: ${systemSummary.period}
-- **זמן**: ${new Date(systemSummary.timestamp).toLocaleString()}
-- **זמן ריצה מערכת**: ${Math.floor(systemSummary.system.uptime / 3600)} שעות, ${Math.floor((systemSummary.system.uptime % 3600) / 60)} דקות
+    switch (format.toLowerCase()) {
+      case 'json':
+        return JSON.stringify(systemSummary, null, 2);
+        
+      case 'text':
+        let textSummary = `System Summary
+Generated: ${new Date(systemSummary.timestamp).toLocaleString()}
+Period: ${systemSummary.period}
 
-## סטטוס סוכנים
+Total Agents: ${systemSummary.agentCount}
+Active Agents: ${systemSummary.activeAgents}
+
+Agent Summaries:
 `;
-
-      // הוסף מידע על כל סוכן
-      Object.entries(systemSummary.agents).forEach(([agentName, agentData]) => {
-        formattedSummary += `### ${agentName}\n`;
         
-        if (agentData.error) {
-          formattedSummary += `- **שגיאה**: ${agentData.error}\n`;
-        } else {
-          formattedSummary += `- **פעולות**: ${agentData.actions || 0}\n`;
+        for (const agentName in systemSummary.agentSummaries) {
+          const summary = systemSummary.agentSummaries[agentName];
           
-          if (agentData.stats && agentData.stats.byResult) {
-            formattedSummary += `- **הצלחות**: ${agentData.stats.byResult.success || 0}\n`;
-            formattedSummary += `- **כשלונות**: ${agentData.stats.byResult.failure || 0}\n`;
-          }
+          textSummary += `\n${agentName}:
+- Actions: ${summary.actionCount || 0}
+- Sessions: ${summary.sessionCount || 0}
+- Success Rate: ${summary.stats && summary.stats.successRate ? summary.stats.successRate.toFixed(2) + '%' : 'N/A'}
+- Last Session: ${summary.lastSession ? new Date(summary.lastSession).toLocaleString() : 'N/A'}
+${summary.error ? '- Error: ' + summary.error : ''}
+`;
         }
         
-        formattedSummary += '\n';
-      });
+        textSummary += `\nInsights:
+${systemSummary.insights || 'No insights available.'}`;
+        
+        return textSummary;
+        
+      case 'markdown':
+      default:
+        let mdSummary = `# System Summary
 
-      // הוסף תובנות אם קיימות
-      if (systemSummary.insights && systemSummary.insights.length > 0) {
-        formattedSummary += `## תובנות מערכת\n`;
+*Generated: ${new Date(systemSummary.timestamp).toLocaleString()}*
+*Period: ${systemSummary.period}*
+
+## Overview
+- **Total Agents:** ${systemSummary.agentCount}
+- **Active Agents:** ${systemSummary.activeAgents}
+
+## Agent Summaries
+
+`;
         
-        systemSummary.insights.forEach(insight => {
-          formattedSummary += `### ${insight.title} (${insight.importance})\n${insight.description}\n`;
+        for (const agentName in systemSummary.agentSummaries) {
+          const summary = systemSummary.agentSummaries[agentName];
           
-          if (insight.recommendations) {
-            formattedSummary += `\n**המלצות**: ${insight.recommendations}\n`;
-          }
-          
-          formattedSummary += '\n';
-        });
-      }
-    } else {
-      // פורמט טקסט פשוט
-      formattedSummary = `סיכום מערכת\n\n`;
-      formattedSummary += `תקופה: ${systemSummary.period}\n`;
-      formattedSummary += `זמן: ${new Date(systemSummary.timestamp).toLocaleString()}\n\n`;
-      
-      formattedSummary += `סטטוס סוכנים:\n`;
-      
-      // הוסף מידע על כל סוכן
-      Object.entries(systemSummary.agents).forEach(([agentName, agentData]) => {
-        formattedSummary += `- ${agentName}: `;
-        
-        if (agentData.error) {
-          formattedSummary += `שגיאה: ${agentData.error}\n`;
-        } else {
-          formattedSummary += `${agentData.actions || 0} פעולות`;
-          
-          if (agentData.stats && agentData.stats.byResult) {
-            formattedSummary += `, ${agentData.stats.byResult.success || 0} הצלחות, ${agentData.stats.byResult.failure || 0} כשלונות`;
-          }
-          
-          formattedSummary += '\n';
+          mdSummary += `### ${agentName}
+- **Actions:** ${summary.actionCount || 0}
+- **Sessions:** ${summary.sessionCount || 0}
+- **Success Rate:** ${summary.stats && summary.stats.successRate ? summary.stats.successRate.toFixed(2) + '%' : 'N/A'}
+- **Last Session:** ${summary.lastSession ? new Date(summary.lastSession).toLocaleString() : 'N/A'}
+${summary.error ? '- **Error:** ' + summary.error : ''}
+
+`;
         }
-      });
-      
-      // הוסף תובנות אם קיימות
-      if (systemSummary.insights && systemSummary.insights.length > 0) {
-        formattedSummary += `\nתובנות מערכת:\n`;
         
-        systemSummary.insights.forEach(insight => {
-          formattedSummary += `- ${insight.title} (${insight.importance}): ${insight.description}\n`;
-          
-          if (insight.recommendations) {
-            formattedSummary += `  המלצות: ${insight.recommendations}\n`;
-          }
-        });
-      }
+        mdSummary += `## Insights
+${systemSummary.insights || 'No insights available.'}`;
+        
+        return mdSummary;
     }
-    
-    return formattedSummary;
   }
 }
 

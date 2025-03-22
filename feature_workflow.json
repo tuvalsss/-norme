@@ -1,0 +1,49 @@
+{
+  "config": {
+    "name": "פיתוח פיצ'ר חדש",
+    "description": "תזרים עבודה מובנה לפיתוח תכונה חדשה",
+    "steps": [
+      {
+        "id": "analyze",
+        "agentId": "dev",
+        "action": "analyze",
+        "params": {
+          "featureName": "{{featureName}}",
+          "description": "{{description}}"
+        }
+      },
+      {
+        "id": "plan",
+        "agentId": "dev",
+        "action": "plan",
+        "params": {
+          "analysisResults": "{{analyze.result}}"
+        }
+      },
+      {
+        "id": "implement",
+        "agentId": "dev",
+        "action": "implement",
+        "params": {
+          "plan": "{{plan.result}}"
+        }
+      },
+      {
+        "id": "test",
+        "agentId": "qa",
+        "action": "test",
+        "params": {
+          "implementation": "{{implement.result}}"
+        }
+      },
+      {
+        "id": "review",
+        "agentId": "dev",
+        "action": "review",
+        "params": {
+          "testResults": "{{test.result}}"
+        }
+      }
+    ]
+  }
+} 

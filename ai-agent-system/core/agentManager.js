@@ -1,35 +1,36 @@
 const { EventEmitter } = require('events');
-const { logger } = require('./logger');
+const logger = require('./logger');
 const path = require('path');
 const fs = require('fs-extra');
 const { v4: uuidv4 } = require('uuid');
 const { getConfig } = require('../config/config');
 
 /**
- * מנהל הסוכנים - אחראי על ניהול והקצאת משאבים לסוכנים במערכת
- * מאפשר:
- * - רישום סוכנים
- * - תזמון משימות אוטומטיות
- * - חלוקת עומסים
- * - העברת מידע בין סוכנים
- * - בחירת מודלים מתאימים
+ * Agent Manager - Responsible for managing and allocating resources to agents in the system
+ * Enables:
+ * - Agent registration
+ * - Automatic task scheduling
+ * - Load balancing
+ * - Information transfer between agents
+ * - Selection of appropriate models
+ * - Workflow support
  */
 class AgentManager extends EventEmitter {
   constructor() {
     super();
     
-    // אתחול מבני הנתונים העיקריים
-    this.agents = {}; // מיפוי של כל הסוכנים הרשומים
-    this.tasks = {}; // מעקב אחר משימות שנמצאות בביצוע
-    this.taskQueue = []; // תור משימות לביצוע
-    this.active = false; // האם המנהל פעיל
-    this.config = null; // הגדרות המערכת
-    this.interval = null; // מזהה עבור בדיקות תקופתיות
-    this.startTime = null; // זמן תחילת פעילות
+    // Initialize main data structures
+    this.agents = {}; // Mapping of all registered agents
+    this.tasks = {}; // Track tasks in progress
+    this.taskQueue = []; // Task queue for execution
+    this.active = false; // Whether the manager is active
+    this.config = null; // System settings
+    this.interval = null; // Identifier for periodic checks
+    this.startTime = null; // Start time of activity
     
     this.logPrefix = '[agent_manager]';
     
-    // סטטיסטיקות
+    // Statistics
     this.stats = {
       totalTasksQueued: 0,
       totalTasksCompleted: 0,
@@ -39,78 +40,83 @@ class AgentManager extends EventEmitter {
       lastTaskTime: null
     };
     
-    logger.info(`${this.logPrefix} מנהל הסוכנים אותחל`);
+    // Workflow systems
+    this.workflowManager = null;
+    this.contextManager = null;
+    this.metricsCollector = null;
+    
+    logger.info(`${this.logPrefix} Agent manager initialized`);
   }
   
   /**
-   * הפעלת מנהל הסוכנים
+   * Activate agent manager
    */
   async start() {
     if (this.active) {
-      logger.info(`${this.logPrefix} מנהל הסוכנים כבר פעיל`);
+      logger.info(`${this.logPrefix} Agent manager already active`);
       return;
     }
     
     try {
-      logger.info(`${this.logPrefix} מפעיל את מנהל הסוכנים...`);
+      logger.info(`${this.logPrefix} Activating agent manager...`);
       
-      // טען הגדרות
+      // Load settings
       this.config = await getConfig();
       
-      // אתחול זמן התחלה
+      // Initialize start time
       this.startTime = new Date();
       
-      // הפעל את בדיקת תור המשימות
-      const checkInterval = this.config.agentManager?.taskCheckInterval || 5000; // ברירת מחדל: 5 שניות
+      // Enable task queue check
+      const checkInterval = this.config.agentManager?.taskCheckInterval || 5000; // Default: 5 seconds
       this.interval = setInterval(() => this._processTaskQueue(), checkInterval);
       
       this.active = true;
       
-      logger.info(`${this.logPrefix} מנהל הסוכנים הופעל בהצלחה`);
+      logger.info(`${this.logPrefix} Agent manager activated successfully`);
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בהפעלת מנהל הסוכנים: ${error.message}`);
+      logger.error(`${this.logPrefix} Error activating agent manager: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * כיבוי מנהל הסוכנים
+   * Deactivate agent manager
    */
   async stop() {
     if (!this.active) {
-      logger.info(`${this.logPrefix} מנהל הסוכנים כבר כבוי`);
+      logger.info(`${this.logPrefix} Agent manager already inactive`);
       return;
     }
     
     try {
-      logger.info(`${this.logPrefix} מכבה את מנהל הסוכנים...`);
+      logger.info(`${this.logPrefix} Deactivating agent manager...`);
       
-      // ביטול בדיקת תור המשימות
+      // Cancel task queue check
       if (this.interval) {
         clearInterval(this.interval);
         this.interval = null;
       }
       
-      // שמירת סטטיסטיקות
+      // Save statistics
       await this._saveStats();
       
       this.active = false;
       
-      logger.info(`${this.logPrefix} מנהל הסוכנים כובה בהצלחה`);
+      logger.info(`${this.logPrefix} Agent manager deactivated successfully`);
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בכיבוי מנהל הסוכנים: ${error.message}`);
+      logger.error(`${this.logPrefix} Error deactivating agent manager: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * רישום סוכן במערכת
-   * @param {string} agentName - שם הסוכן 
-   * @param {Object} agentInstance - מופע הסוכן
+   * Register agent in the system
+   * @param {string} agentName - Agent name 
+   * @param {Object} agentInstance - Agent instance
    */
   registerAgent(agentName, agentInstance) {
     if (this.agents[agentName]) {
-      logger.warn(`${this.logPrefix} סוכן בשם ${agentName} כבר רשום במערכת`);
+      logger.warn(`${this.logPrefix} Agent named ${agentName} is already registered in the system`);
       return;
     }
     
@@ -122,170 +128,33 @@ class AgentManager extends EventEmitter {
       status: 'idle'
     };
     
-    // אתחול מונה שימוש בסוכן
+    // Initialize agent usage counter
     this.stats.agentUsageCount[agentName] = 0;
     
-    logger.info(`${this.logPrefix} סוכן ${agentName} נרשם במערכת`);
+    logger.info(`${this.logPrefix} Agent ${agentName} registered in the system`);
   }
   
   /**
-   * ביטול רישום של סוכן במערכת
-   * @param {string} agentName - שם הסוכן
+   * Unregister agent from the system
+   * @param {string} agentName - Agent name
    */
   unregisterAgent(agentName) {
     if (!this.agents[agentName]) {
-      logger.warn(`${this.logPrefix} סוכן בשם ${agentName} אינו רשום במערכת`);
+      logger.warn(`${this.logPrefix} Agent named ${agentName} is not registered in the system`);
       return;
     }
     
     delete this.agents[agentName];
-    logger.info(`${this.logPrefix} סוכן ${agentName} הוסר מהמערכת`);
+    logger.info(`${this.logPrefix} Agent ${agentName} removed from the system`);
   }
-  
+
   /**
-   * בדיקה אם סוכן רשום במערכת
-   * @param {string} agentName - שם הסוכן
-   * @returns {boolean} - האם הסוכן רשום
-   */
-  isAgentRegistered(agentName) {
-    return !!this.agents[agentName];
-  }
-  
-  /**
-   * קבלת רשימת כל הסוכנים הרשומים
-   * @returns {Object} - מידע על כל הסוכנים
-   */
-  getRegisteredAgents() {
-    const agentInfo = {};
-    
-    for (const [agentName, agentData] of Object.entries(this.agents)) {
-      agentInfo[agentName] = {
-        registeredAt: agentData.registeredAt,
-        lastActivity: agentData.lastActivity,
-        status: agentData.status,
-        currentTask: agentData.currentTask
-      };
-    }
-    
-    return agentInfo;
-  }
-  
-  /**
-   * הוספת משימה לתור המשימות
-   * @param {string} agentName - שם הסוכן לביצוע המשימה
-   * @param {string} actionType - סוג הפעולה 
-   * @param {Object} parameters - פרמטרים לפעולה
-   * @param {Object} options - אפשרויות נוספות
-   * @returns {string} - מזהה המשימה
-   */
-  addTask(agentName, actionType, parameters = {}, options = {}) {
-    if (!this.active) {
-      throw new Error('מנהל הסוכנים אינו פעיל');
-    }
-    
-    if (!this.agents[agentName]) {
-      throw new Error(`סוכן ${agentName} אינו רשום במערכת`);
-    }
-    
-    const taskId = `task_${uuidv4()}`;
-    const task = {
-      id: taskId,
-      agentName,
-      actionType,
-      parameters,
-      priority: options.priority || 'normal', // אפשרויות: low, normal, high, critical
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-      startedAt: null,
-      completedAt: null,
-      result: null,
-      error: null
-    };
-    
-    this.tasks[taskId] = task;
-    
-    // הוסף את המשימה לתור בהתאם לעדיפות
-    if (task.priority === 'critical') {
-      // משימות קריטיות נכנסות לראש התור
-      this.taskQueue.unshift(taskId);
-    } else if (task.priority === 'high') {
-      // משימות בעדיפות גבוהה נכנסות אחרי משימות קריטיות
-      const criticalTasksCount = this.taskQueue.filter(id => 
-        this.tasks[id].priority === 'critical'
-      ).length;
-      
-      this.taskQueue.splice(criticalTasksCount, 0, taskId);
-    } else {
-      // משימות רגילות או בעדיפות נמוכה נכנסות לסוף התור
-      this.taskQueue.push(taskId);
-    }
-    
-    this.stats.totalTasksQueued++;
-    this.stats.lastTaskTime = new Date().toISOString();
-    
-    logger.info(`${this.logPrefix} משימה ${taskId} (${actionType}) נוספה לתור עבור סוכן ${agentName}`);
-    
-    return taskId;
-  }
-  
-  /**
-   * בדיקת סטטוס משימה
-   * @param {string} taskId - מזהה המשימה
-   * @returns {Object|null} - פרטי המשימה
-   */
-  getTaskStatus(taskId) {
-    if (!this.tasks[taskId]) {
-      return null;
-    }
-    
-    return { ...this.tasks[taskId] };
-  }
-  
-  /**
-   * המתנה לסיום משימה
-   * @param {string} taskId - מזהה המשימה
-   * @param {number} timeout - זמן המתנה מקסימלי במילישניות
-   * @returns {Promise<Object>} - תוצאת המשימה
-   */
-  async waitForTask(taskId, timeout = 60000) {
-    if (!this.tasks[taskId]) {
-      throw new Error(`משימה ${taskId} אינה קיימת`);
-    }
-    
-    const startTime = Date.now();
-    
-    return new Promise((resolve, reject) => {
-      const checkInterval = setInterval(() => {
-        const task = this.tasks[taskId];
-        
-        // בדוק אם המשימה הושלמה
-        if (task.status === 'completed') {
-          clearInterval(checkInterval);
-          resolve(task.result);
-        }
-        
-        // בדוק אם המשימה נכשלה
-        if (task.status === 'failed') {
-          clearInterval(checkInterval);
-          reject(new Error(task.error || 'המשימה נכשלה'));
-        }
-        
-        // בדוק אם פג תוקף זמן ההמתנה
-        if (Date.now() - startTime > timeout) {
-          clearInterval(checkInterval);
-          reject(new Error(`פג תוקף זמן ההמתנה למשימה ${taskId}`));
-        }
-      }, 500);
-    });
-  }
-  
-  /**
-   * קבלת המודל המומלץ עבור סוכן
-   * @param {string} agentName - שם הסוכן
-   * @returns {Object} - הספק והמודל המומלצים
+   * Returns the recommended model for a given agent
+   * @param {string} agentName - Agent name
+   * @returns {Object} - Object containing the recommended AI provider and model
    */
   getRecommendedModel(agentName) {
-    // אם הסוכן לא נרשם, השתמש בברירת מחדל
+    // If the agent is not registered, use default
     if (!this.agents[agentName]) {
       return {
         provider: 'openai',
@@ -295,7 +164,7 @@ class AgentManager extends EventEmitter {
     
     const agentInstance = this.agents[agentName].instance;
     
-    // בדוק אם לסוכן יש העדפות מודל
+    // Check if the agent has model preferences
     if (agentInstance.preferredProvider && agentInstance.preferredModel) {
       return {
         provider: agentInstance.preferredProvider,
@@ -303,7 +172,7 @@ class AgentManager extends EventEmitter {
       };
     }
     
-    // אחרת, השתמש בברירת מחדל מהתצורה
+    // Otherwise, use default from configuration
     const defaultProvider = this.config?.ai?.defaultProvider || 'openai';
     const defaultModel = this.config?.ai?.defaultModel || 'gpt-4o';
     
@@ -314,34 +183,34 @@ class AgentManager extends EventEmitter {
   }
   
   /**
-   * טיפול במשימה קיימת
-   * @param {string} taskId - מזהה המשימה
+   * Handle an existing task
+   * @param {string} taskId - Task ID
    * @private
    */
   async _processTask(taskId) {
     if (!this.tasks[taskId]) {
-      logger.warn(`${this.logPrefix} משימה ${taskId} אינה קיימת`);
+      logger.warn(`${this.logPrefix} Task ${taskId} does not exist`);
       return;
     }
     
     const task = this.tasks[taskId];
     
-    // בדוק אם המשימה כבר מטופלת או הושלמה
+    // Check if the task is already being processed or completed
     if (task.status !== 'pending') {
       return;
     }
     
-    // בדוק אם הסוכן המיועד זמין
+    // Check if the designated agent is available
     const agentData = this.agents[task.agentName];
     if (!agentData || agentData.status !== 'idle') {
-      // אם הסוכן לא זמין כרגע, נדלג וננסה שוב בהזדמנות הבאה
+      // If the agent is not available, skip and try again later
       return;
     }
     
     try {
-      logger.info(`${this.logPrefix} מתחיל לטפל במשימה ${taskId} (${task.actionType}) באמצעות סוכן ${task.agentName}`);
+      logger.info(`${this.logPrefix} Starting to process task ${taskId} (${task.actionType}) using agent ${task.agentName}`);
       
-      // עדכן סטטוס הסוכן והמשימה
+      // Update agent and task status
       agentData.status = 'busy';
       agentData.currentTask = taskId;
       agentData.lastActivity = new Date().toISOString();
@@ -349,167 +218,476 @@ class AgentManager extends EventEmitter {
       task.status = 'running';
       task.startedAt = new Date().toISOString();
       
-      // קבל את הסוכן
+      // Get the agent
       const agent = agentData.instance;
       
-      // בדוק אם קיימת מתודה מתאימה בסוכן
+      // Check if there is a matching method in the agent
       if (typeof agent[task.actionType] !== 'function') {
-        throw new Error(`פעולה ${task.actionType} אינה נתמכת על ידי סוכן ${task.agentName}`);
+        throw new Error(`Action ${task.actionType} is not supported by agent ${task.agentName}`);
       }
       
-      // הרץ את הפעולה
+      // Run the action
       const result = await agent[task.actionType](...Object.values(task.parameters));
       
-      // עדכן את תוצאת המשימה
+      // Update task result
       task.status = 'completed';
       task.completedAt = new Date().toISOString();
       task.result = result;
       
-      // עדכן סטטיסטיקות
+      // Update statistics
       this.stats.totalTasksCompleted++;
       this.stats.agentUsageCount[task.agentName]++;
       
-      // עדכן את מצב הסוכן
+      // Update agent status
       agentData.status = 'idle';
       agentData.currentTask = null;
       
-      logger.info(`${this.logPrefix} משימה ${taskId} הושלמה בהצלחה`);
+      logger.info(`${this.logPrefix} Task ${taskId} completed successfully`);
     } catch (error) {
-      // טיפול בשגיאות
-      logger.error(`${this.logPrefix} שגיאה בביצוע משימה ${taskId}: ${error.message}`);
+      // Error handling
+      logger.error(`${this.logPrefix} Error executing task ${taskId}: ${error.message}`);
       
       task.status = 'failed';
       task.completedAt = new Date().toISOString();
       task.error = error.message;
       
-      // עדכן סטטיסטיקות
+      // Update statistics
       this.stats.totalTasksFailed++;
       
-      // שחרר את הסוכן
+      // Update agent status
       agentData.status = 'idle';
       agentData.currentTask = null;
     }
+    
+    // Emit task completion event
+    this.emit('task:completed', {
+      taskId,
+      agentName: task.agentName,
+      status: task.status,
+      result: task.result,
+      error: task.error
+    });
+    
+    // Process the next task if available
+    if (this.taskQueue.length > 0) {
+      this._processTaskQueue();
+    }
   }
   
   /**
-   * עיבוד תור המשימות
+   * Loads available agent types from the agents directory
    * @private
    */
-  async _processTaskQueue() {
-    if (!this.active || this.taskQueue.length === 0) {
-      return;
-    }
-    
-    // בדוק אם יש משימות בתור
-    while (this.taskQueue.length > 0) {
-      const taskId = this.taskQueue[0];
+  _loadAgentTypes() {
+    try {
+      const agentsPath = path.join(__dirname, '../agents');
+      const files = fs.readdirSync(agentsPath);
       
-      // נסה לטפל במשימה
-      await this._processTask(taskId);
-      
-      // בדוק אם המשימה הסתיימה (הצליחה או נכשלה)
-      const task = this.tasks[taskId];
-      if (task.status === 'completed' || task.status === 'failed') {
-        // הסר את המשימה מהתור
-        this.taskQueue.shift();
-      } else {
-        // אם המשימה עדיין מחכה או רצה, צא מהלולאה ונסה שוב מאוחר יותר
-        break;
+      for (const file of files) {
+        if (file.endsWith('.js')) {
+          const agentPath = path.join(agentsPath, file);
+          const AgentClass = require(agentPath);
+          
+          if (typeof AgentClass === 'function') {
+            const agentType = path.basename(file, '.js');
+            this.agentTypes[agentType] = AgentClass;
+            logger.info(`Registered agent type: ${agentType}`);
+          }
+        }
       }
+      
+      logger.info(`Loaded ${Object.keys(this.agentTypes).length} agent types`);
+    } catch (error) {
+      logger.error(`Failed to load agent types: ${error.message}`);
     }
   }
   
   /**
-   * קבלת סטטיסטיקות ביצועים
-   * @returns {Object} - סטטיסטיקות מנהל הסוכנים
+   * Sets up event handlers for agent communication
+   * @private
    */
-  getStats() {
-    const uptime = this.startTime ? Math.floor((new Date() - this.startTime) / 1000) : 0;
+  _setupEventHandlers() {
+    this.on('agent:message', (message) => {
+      const { from, to, content, metadata } = message;
+      
+      if (to === 'all') {
+        // Broadcast to all agents
+        Object.values(this.agents).forEach(agent => {
+          if (agent.name !== from) {
+            agent.emit('message', { from, content, metadata });
+          }
+        });
+      } else if (this.agents[to]) {
+        // Send to specific agent
+        this.agents[to].emit('message', { from, content, metadata });
+      } else {
+        logger.warn(`Message from ${from} to unknown agent ${to}`);
+      }
+    });
+    
+    this.on('agent:task', (task) => {
+      const { agentName, taskData } = task;
+      
+      if (this.agents[agentName]) {
+        this.agents[agentName].queueTask(taskData);
+      } else {
+        logger.warn(`Task assignment to unknown agent ${agentName}`);
+      }
+    });
+  }
+  
+  /**
+   * Creates a new agent of the specified type
+   * @param {string} type - Agent type
+   * @param {string} name - Agent name (unique identifier)
+   * @param {Object} options - Additional agent options
+   * @returns {Object} The created agent
+   */
+  createAgent(type, name, options = {}) {
+    try {
+      if (!this.agentTypes[type]) {
+        logger.error(`Unknown agent type: ${type}`);
+        throw new Error(`Unknown agent type: ${type}`);
+      }
+      
+      if (this.agents[name]) {
+        logger.warn(`Agent with name ${name} already exists`);
+        return this.agents[name];
+      }
+      
+      // Create a new agent
+      const AgentClass = this.agentTypes[type];
+      const agent = new AgentClass({
+        name,
+        type,
+        workingDirectory: path.join(this.workingDirectory, name),
+        ...options
+      });
+      
+      // Register the agent
+      this.agents[name] = agent;
+      
+      // Listen for agent events
+      agent.on('started', () => {
+        this.emit('agent:started', { name, type });
+      });
+      
+      agent.on('stopped', () => {
+        this.emit('agent:stopped', { name, type });
+      });
+      
+      agent.on('taskCompleted', (task) => {
+        this.emit('agent:taskCompleted', { agentName: name, task });
+      });
+      
+      agent.on('taskFailed', (data) => {
+        this.emit('agent:taskFailed', { agentName: name, ...data });
+      });
+      
+      logger.info(`Created agent ${name} of type ${type}`);
+      return agent;
+    } catch (error) {
+      logger.error(`Failed to create agent ${name} of type ${type}: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Gets an agent by name
+   * @param {string} name - Agent name
+   * @returns {Object} The agent
+   */
+  getAgent(name) {
+    return this.agents[name];
+  }
+  
+  /**
+   * Lists all registered agents
+   * @returns {Array<Object>} Array of agent information
+   */
+  listAgents() {
+    return Object.keys(this.agents).map(name => {
+      const agent = this.agents[name];
+      return {
+        name: agent.name,
+        type: agent.type,
+        status: agent.status,
+        isRunning: agent.isRunning
+      };
+    });
+  }
+  
+  /**
+   * Starts an agent by name
+   * @param {string} name - Agent name
+   * @returns {Promise<boolean>} Whether the agent was started
+   */
+  async startAgent(name) {
+    const agent = this.agents[name];
+    
+    if (!agent) {
+      logger.error(`Agent ${name} not found`);
+      return false;
+    }
+    
+    try {
+      await agent.start();
+      logger.info(`Started agent ${name}`);
+      return true;
+    } catch (error) {
+      logger.error(`Failed to start agent ${name}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Stops an agent by name
+   * @param {string} name - Agent name
+   * @returns {Promise<boolean>} Whether the agent was stopped
+   */
+  async stopAgent(name) {
+    const agent = this.agents[name];
+    
+    if (!agent) {
+      logger.error(`Agent ${name} not found`);
+      return false;
+    }
+    
+    try {
+      await agent.stop();
+      logger.info(`Stopped agent ${name}`);
+      return true;
+    } catch (error) {
+      logger.error(`Failed to stop agent ${name}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Removes an agent from the system
+   * @param {string} name - Agent name
+   * @returns {boolean} Whether the agent was removed
+   */
+  removeAgent(name) {
+    const agent = this.agents[name];
+    
+    if (!agent) {
+      logger.error(`Agent ${name} not found`);
+      return false;
+    }
+    
+    try {
+      if (agent.isRunning) {
+        agent.stop();
+      }
+      
+      delete this.agents[name];
+      logger.info(`Removed agent ${name}`);
+      return true;
+    } catch (error) {
+      logger.error(`Failed to remove agent ${name}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Creates a multi-agent system with predefined agent types
+   * @param {Object} config - System configuration
+   * @returns {Array<Object>} Created agents
+   */
+  createMultiAgentSystem(config = {}) {
+    const createdAgents = [];
+    
+    try {
+      // Create development agent
+      if (config.dev !== false) {
+        const devName = config.dev?.name || 'dev_agent';
+        const devAgent = this.createAgent('dev_agent', devName, config.dev);
+        createdAgents.push(devAgent);
+      }
+      
+      // Create QA agent
+      if (config.qa !== false) {
+        const qaName = config.qa?.name || 'qa_agent';
+        const qaAgent = this.createAgent('qa', qaName, config.qa);
+        createdAgents.push(qaAgent);
+      }
+      
+      // Create executor agent
+      if (config.executor !== false) {
+        const executorName = config.executor?.name || 'executor_agent';
+        const executorAgent = this.createAgent('executor', executorName, config.executor);
+        createdAgents.push(executorAgent);
+      }
+      
+      // Create git synchronization agent
+      if (config.gitSync !== false) {
+        const gitSyncName = config.gitSync?.name || 'git_sync_agent';
+        const gitSyncAgent = this.createAgent('git_sync', gitSyncName, config.gitSync);
+        createdAgents.push(gitSyncAgent);
+      }
+      
+      // Create summary agent
+      if (config.summary !== false) {
+        const summaryName = config.summary?.name || 'summary_agent';
+        const summaryAgent = this.createAgent('summary', summaryName, config.summary);
+        createdAgents.push(summaryAgent);
+      }
+      
+      // Create scheduler agent
+      if (config.scheduler !== false) {
+        const schedulerName = config.scheduler?.name || 'scheduler_agent';
+        const schedulerAgent = this.createAgent('scheduler_agent', schedulerName, config.scheduler);
+        createdAgents.push(schedulerAgent);
+      }
+      
+      logger.info(`Created multi-agent system with ${createdAgents.length} agents`);
+      
+      return createdAgents;
+    } catch (error) {
+      logger.error(`Failed to create multi-agent system: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Starts all agents in the system
+   * @returns {Promise<Array<string>>} Names of started agents
+   */
+  async startAllAgents() {
+    const startedAgents = [];
+    
+    for (const name in this.agents) {
+      try {
+        const success = await this.startAgent(name);
+        if (success) {
+          startedAgents.push(name);
+        }
+      } catch (error) {
+        logger.error(`Error starting agent ${name}: ${error.message}`);
+      }
+    }
+    
+    logger.info(`Started ${startedAgents.length} agents`);
+    return startedAgents;
+  }
+  
+  /**
+   * Stops all agents in the system
+   * @returns {Promise<Array<string>>} Names of stopped agents
+   */
+  async stopAllAgents() {
+    const stoppedAgents = [];
+    
+    for (const name in this.agents) {
+      try {
+        const success = await this.stopAgent(name);
+        if (success) {
+          stoppedAgents.push(name);
+        }
+      } catch (error) {
+        logger.error(`Error stopping agent ${name}: ${error.message}`);
+      }
+    }
+    
+    logger.info(`Stopped ${stoppedAgents.length} agents`);
+    return stoppedAgents;
+  }
+  
+  /**
+   * Sends a message to an agent
+   * @param {string} from - Sender name
+   * @param {string} to - Recipient name
+   * @param {string} content - Message content
+   * @param {Object} metadata - Additional metadata
+   * @returns {boolean} Whether the message was sent
+   */
+  sendMessage(from, to, content, metadata = {}) {
+    if (to === 'all' || this.agents[to]) {
+      this.emit('agent:message', { from, to, content, metadata });
+      return true;
+    } else {
+      logger.warn(`Cannot send message to unknown agent: ${to}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Assigns a task to an agent
+   * @param {string} agentName - Agent name
+   * @param {Object} taskData - Task data
+   * @returns {string|null} Task ID if assigned, null otherwise
+   */
+  assignTask(agentName, taskData) {
+    const agent = this.agents[agentName];
+    
+    if (!agent) {
+      logger.error(`Cannot assign task to unknown agent: ${agentName}`);
+      return null;
+    }
+    
+    try {
+      return agent.queueTask(taskData);
+    } catch (error) {
+      logger.error(`Failed to assign task to agent ${agentName}: ${error.message}`);
+      return null;
+    }
+  }
+  
+  /**
+   * Gets the system status
+   * @returns {Object} System status
+   */
+  getSystemStatus() {
+    const agentCount = Object.keys(this.agents).length;
+    const runningAgents = Object.values(this.agents).filter(a => a.isRunning).length;
     
     return {
-      isActive: this.active,
-      startTime: this.startTime ? this.startTime.toISOString() : null,
-      uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${uptime % 60}s`,
-      registeredAgents: Object.keys(this.agents).length,
-      activeAgents: Object.values(this.agents).filter(a => a.status === 'busy').length,
-      queuedTasks: this.taskQueue.length,
-      totalTasksStats: {
-        queued: this.stats.totalTasksQueued,
-        completed: this.stats.totalTasksCompleted,
-        failed: this.stats.totalTasksFailed,
-        success_rate: this.stats.totalTasksQueued > 0 
-          ? ((this.stats.totalTasksCompleted / this.stats.totalTasksQueued) * 100).toFixed(2) + '%' 
-          : 'N/A'
-      },
-      agentUsage: this.stats.agentUsageCount,
-      lastTaskTime: this.stats.lastTaskTime
+      agentCount,
+      runningAgents,
+      agents: this.listAgents(),
+      workingDirectory: this.workingDirectory
     };
   }
   
   /**
-   * שמירת סטטיסטיקות למאגר
-   * @private
+   * Sets the global working directory
+   * @param {string} directory - Working directory path
    */
-  async _saveStats() {
-    try {
-      const statsDir = path.join(process.cwd(), 'logs', 'stats');
-      await fs.ensureDir(statsDir);
-      
-      const statsFile = path.join(statsDir, `agent_manager_stats_${new Date().toISOString().replace(/:/g, '-')}.json`);
-      await fs.writeJson(statsFile, this.getStats(), { spaces: 2 });
-      
-      logger.debug(`${this.logPrefix} סטטיסטיקות נשמרו ב-${statsFile}`);
-    } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בשמירת סטטיסטיקות: ${error.message}`);
-    }
+  setWorkingDirectory(directory) {
+    this.workingDirectory = directory;
+    fs.ensureDirSync(this.workingDirectory);
+    logger.info(`Set global working directory to ${directory}`);
   }
   
   /**
-   * קבלת הפעילות הנוכחית של הסוכנים
-   * @returns {Object} - מידע על פעילות נוכחית
+   * Set workflow manager
+   * @param {Object} workflowManager - Workflow manager instance
    */
-  getCurrentActivity() {
-    const activity = {
-      runningTasks: {},
-      pendingTasks: this.taskQueue.length,
-      idleAgents: [],
-      busyAgents: []
-    };
-    
-    // איסוף מידע על סוכנים פעילים וממתינים
-    for (const [agentName, agentData] of Object.entries(this.agents)) {
-      if (agentData.status === 'busy' && agentData.currentTask) {
-        activity.busyAgents.push({
-          name: agentName,
-          currentTask: agentData.currentTask,
-          lastActivity: agentData.lastActivity
-        });
-        
-        const task = this.tasks[agentData.currentTask];
-        if (task) {
-          activity.runningTasks[agentData.currentTask] = {
-            type: task.actionType,
-            startedAt: task.startedAt,
-            agent: agentName
-          };
-        }
-      } else {
-        activity.idleAgents.push({
-          name: agentName,
-          lastActivity: agentData.lastActivity
-        });
-      }
-    }
-    
-    // הוסף מידע כללי
-    activity.timestamp = new Date().toISOString();
-    activity.pendingTasksIds = this.taskQueue.slice(0, 5); // הצג רק 5 הראשונים
-    
-    return activity;
+  setWorkflowManager(workflowManager) {
+    this.workflowManager = workflowManager;
+    logger.info(`${this.logPrefix} Workflow manager set`);
+  }
+  
+  /**
+   * Set context manager
+   * @param {Object} contextManager - Context manager instance
+   */
+  setContextManager(contextManager) {
+    this.contextManager = contextManager;
+    logger.info(`${this.logPrefix} Context manager set`);
+  }
+  
+  /**
+   * Set metrics collector
+   * @param {Object} metricsCollector - Metrics collector instance
+   */
+  setMetricsCollector(metricsCollector) {
+    this.metricsCollector = metricsCollector;
+    logger.info(`${this.logPrefix} Metrics collector set`);
   }
 }
 
-// יצירת מופע בודד
+// Create and export singleton instance
 const agentManager = new AgentManager();
-
 module.exports = agentManager; 

@@ -1,96 +1,69 @@
-const fs = require('fs');
+const fs = require('fs-extra');
 const path = require('path');
-const winston = require('winston');
-const { format } = winston;
+const { createLogger, format, transports } = require('winston');
+const { combine, timestamp, label, printf, colorize } = format;
 
-// יצירת תיקיית לוגים אם היא לא קיימת
-const logDir = path.join(__dirname, '../logs');
-if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true });
-}
+// Create logs directory if it doesn't exist
+const logsDir = path.join(__dirname, '../logs');
+fs.ensureDirSync(logsDir);
 
-// פורמט רגיל ללוגים
-const defaultFormat = format.combine(
-  format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-  format.errors({ stack: true }),
-  format.splat(),
-  format.json()
-);
-
-// פורמט ללוגים קונסוליים
-const consoleFormat = format.combine(
-  format.colorize(),
-  format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-  format.printf(({ timestamp, level, message, agent, ...meta }) => {
-    const agentPrefix = agent ? `[${agent}]` : '';
-    const metaStr = Object.keys(meta).length ? JSON.stringify(meta) : '';
-    return `${timestamp} ${level} ${agentPrefix} ${message} ${metaStr}`;
-  })
-);
-
-// לוגר מערכת כללי
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: defaultFormat,
-  defaultMeta: { service: 'ai-agent-system' },
-  transports: [
-    // לוג שגיאות לקובץ
-    new winston.transports.File({ 
-      filename: path.join(logDir, 'error.log'), 
-      level: 'error' 
-    }),
-    // לוג של כל הרמות לקובץ
-    new winston.transports.File({ 
-      filename: path.join(logDir, 'combined.log') 
-    }),
-    // פלט לקונסול (רק בסביבת פיתוח)
-    process.env.NODE_ENV !== 'production' ? 
-      new winston.transports.Console({
-        format: consoleFormat
-      }) : null
-  ].filter(Boolean)
+// Create custom log format
+const logFormat = printf(({ level, message, timestamp }) => {
+  return `${timestamp} [${level}]: ${message}`;
 });
 
-/**
- * יוצר לוגר עבור סוכן ספציפי
- * @param {string} agentName - שם הסוכן
- * @returns {winston.Logger} - מופע לוגר ייעודי לסוכן
- */
-function createAgentLogger(agentName) {
-  // יצירת תיקיית לוגים ייעודית לסוכן
-  const agentLogDir = path.join(logDir, agentName);
-  if (!fs.existsSync(agentLogDir)) {
-    fs.mkdirSync(agentLogDir, { recursive: true });
-  }
+// Create logger with console and file transports
+const logger = createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: combine(
+    timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    logFormat
+  ),
+  transports: [
+    new transports.Console({
+      format: combine(
+        colorize(),
+        logFormat
+      )
+    }),
+    new transports.File({ 
+      filename: path.join(logsDir, 'error.log'), 
+      level: 'error' 
+    }),
+    new transports.File({ 
+      filename: path.join(logsDir, 'combined.log') 
+    })
+  ]
+});
 
-  return winston.createLogger({
-    level: process.env.LOG_LEVEL || 'info',
-    format: defaultFormat,
-    defaultMeta: { agent: agentName },
-    transports: [
-      // לוג שגיאות לקובץ של הסוכן
-      new winston.transports.File({ 
-        filename: path.join(agentLogDir, 'error.log'), 
-        level: 'error' 
-      }),
-      // לוג של כל הרמות לקובץ ייעודי לסוכן
-      new winston.transports.File({ 
-        filename: path.join(agentLogDir, 'agent.log') 
-      }),
-      // לוג לקובץ המשולב של המערכת
-      new winston.transports.File({ 
-        filename: path.join(logDir, 'combined.log') 
-      }),
-      // פלט לקונסול (רק בסביבת פיתוח)
-      process.env.NODE_ENV !== 'production' ? 
-        new winston.transports.Console({
-          format: consoleFormat
-        }) : null
-    ].filter(Boolean)
-  });
-}
+// Add timestamp to each log entry
+logger.timestamp = () => {
+  return new Date().toISOString();
+};
 
-module.exports = {
-  logger,
-  createAgentLogger
-}; 
+// Log agent action with optional success status
+const logAgentAction = (agentId, action, success = true) => {
+  const status = success ? 'SUCCESS' : 'FAILURE';
+  const message = `${agentId} | ${action} | ${status}`;
+  success ? logger.info(message) : logger.error(message);
+  return { timestamp: logger.timestamp(), agentId, action, success };
+};
+
+// Log system event
+const logSystemEvent = (eventType, message) => {
+  logger.info(`SYSTEM | ${eventType} | ${message}`);
+  return { timestamp: logger.timestamp(), type: 'system', eventType, message };
+};
+
+// Log user interaction
+const logUserInteraction = (userId, action, details = {}) => {
+  const message = `USER ${userId} | ${action} | ${JSON.stringify(details)}`;
+  logger.info(message);
+  return { timestamp: logger.timestamp(), type: 'user', userId, action, details };
+};
+
+// Export logger functions
+module.exports = logger;
+module.exports.logAgentAction = logAgentAction;
+module.exports.logSystemEvent = logSystemEvent;
+module.exports.logUserInteraction = logUserInteraction; 

@@ -1,137 +1,231 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { logger } = require('./logger');
+const glob = require('glob');
+const logger = require('./logger');
 
 /**
- * מנהל קבצים שמאפשר קריאה וכתיבה בטוחה של קבצים
+ * File management system
+ * Handles file operations, search, and workspace management
  */
 class FileManager {
-  constructor(baseDir = '../workspace') {
-    // נתיב בסיס לתיקיית העבודה
-    this.baseDir = path.resolve(__dirname, baseDir);
-    
-    // וודא שהתיקייה קיימת
-    fs.ensureDirSync(this.baseDir);
-    
-    logger.info(`מנהל קבצים אותחל עם תיקיית בסיס: ${this.baseDir}`);
+  constructor() {
+    this.workspacePath = path.join(process.cwd(), 'workspace');
+    fs.ensureDirSync(this.workspacePath);
+    logger.info('File Manager initialized');
   }
 
   /**
-   * מנרמל נתיב יחסי לנתיב מלא ומוודא שהוא בתוך תיקיית העבודה
-   * @param {string} relativePath - נתיב יחסי לקובץ
-   * @returns {string} - נתיב מלא
+   * Creates a file with content
+   * @param {string} filePath - Path to the file, relative to workspace
+   * @param {string} content - File content
+   * @returns {Object} File information
    */
-  _normalizePath(relativePath) {
-    // מנרמל את הנתיב ומוודא שאין יציאה מתיקיית העבודה
-    const normalizedPath = path.normalize(relativePath);
-    
-    if (normalizedPath.startsWith('..') || normalizedPath.includes('../')) {
-      throw new Error('אין גישה לקבצים מחוץ לתיקיית העבודה');
-    }
-    
-    return path.join(this.baseDir, normalizedPath);
-  }
-
-  /**
-   * קורא קובץ מתיקיית העבודה
-   * @param {string} relativePath - נתיב יחסי לקובץ
-   * @returns {Promise<string>} - תוכן הקובץ
-   */
-  async readFile(relativePath) {
+  async createFile(filePath, content) {
     try {
-      const fullPath = this._normalizePath(relativePath);
-      logger.info(`קורא קובץ: ${relativePath}`);
-      
-      return await fs.readFile(fullPath, 'utf8');
-    } catch (error) {
-      logger.error(`שגיאה בקריאת קובץ ${relativePath}: ${error.message}`);
-      throw error;
-    }
-  }
+      const fullPath = path.join(this.workspacePath, filePath);
+      const dirPath = path.dirname(fullPath);
 
-  /**
-   * כותב לקובץ בתיקיית העבודה
-   * @param {string} relativePath - נתיב יחסי לקובץ
-   * @param {string} content - תוכן הקובץ
-   * @returns {Promise<void>}
-   */
-  async writeFile(relativePath, content) {
-    try {
-      const fullPath = this._normalizePath(relativePath);
-      logger.info(`כותב לקובץ: ${relativePath}`);
-      
-      // וודא שתיקיית האב קיימת
-      await fs.ensureDir(path.dirname(fullPath));
-      
+      await fs.ensureDir(dirPath);
       await fs.writeFile(fullPath, content);
+
+      logger.info(`Created file: ${filePath}`);
+
+      return {
+        path: filePath,
+        fullPath,
+        size: content.length
+      };
     } catch (error) {
-      logger.error(`שגיאה בכתיבה לקובץ ${relativePath}: ${error.message}`);
+      logger.error(`Error creating file ${filePath}: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * בודק אם קובץ קיים
-   * @param {string} relativePath - נתיב יחסי לקובץ
-   * @returns {Promise<boolean>} - האם הקובץ קיים
+   * Reads a file's content
+   * @param {string} filePath - Path to the file, relative to workspace
+   * @returns {string} File content
    */
-  async fileExists(relativePath) {
+  async readFile(filePath) {
     try {
-      const fullPath = this._normalizePath(relativePath);
-      return await fs.pathExists(fullPath);
+      const fullPath = path.join(this.workspacePath, filePath);
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`File not found: ${filePath}`);
+      }
+
+      const content = await fs.readFile(fullPath, 'utf8');
+      return content;
     } catch (error) {
-      logger.error(`שגיאה בבדיקת קיום קובץ ${relativePath}: ${error.message}`);
-      return false;
+      logger.error(`Error reading file ${filePath}: ${error.message}`);
+      throw error;
     }
   }
 
   /**
-   * מחזיר רשימה של קבצים בתיקייה
-   * @param {string} relativeDirPath - נתיב יחסי לתיקייה
-   * @returns {Promise<string[]>} - רשימת הקבצים בתיקייה
+   * Updates an existing file
+   * @param {string} filePath - Path to the file, relative to workspace
+   * @param {string} content - New file content
+   * @returns {Object} File information
    */
-  async listFiles(relativeDirPath = '') {
+  async updateFile(filePath, content) {
     try {
-      const fullPath = this._normalizePath(relativeDirPath);
-      logger.info(`מציג רשימת קבצים בתיקייה: ${relativeDirPath}`);
-      
+      const fullPath = path.join(this.workspacePath, filePath);
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`File not found: ${filePath}`);
+      }
+
+      await fs.writeFile(fullPath, content);
+      logger.info(`Updated file: ${filePath}`);
+
+      return {
+        path: filePath,
+        fullPath,
+        size: content.length
+      };
+    } catch (error) {
+      logger.error(`Error updating file ${filePath}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Deletes a file
+   * @param {string} filePath - Path to the file, relative to workspace
+   * @returns {boolean} Success status
+   */
+  async deleteFile(filePath) {
+    try {
+      const fullPath = path.join(this.workspacePath, filePath);
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`File not found: ${filePath}`);
+      }
+
+      await fs.unlink(fullPath);
+      logger.info(`Deleted file: ${filePath}`);
+      return true;
+    } catch (error) {
+      logger.error(`Error deleting file ${filePath}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Lists files in a directory
+   * @param {string} dirPath - Directory path, relative to workspace
+   * @returns {Array} List of files and directories
+   */
+  async listDirectory(dirPath = '') {
+    try {
+      const fullPath = path.join(this.workspacePath, dirPath);
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`Directory not found: ${dirPath}`);
+      }
+
       const items = await fs.readdir(fullPath);
-      
-      const stats = await Promise.all(
-        items.map(async (item) => {
-          const itemPath = path.join(fullPath, item);
-          const stat = await fs.stat(itemPath);
-          return {
-            name: item,
-            isDirectory: stat.isDirectory(),
-            path: path.join(relativeDirPath, item)
-          };
-        })
-      );
-      
-      return stats;
+      const result = [];
+
+      for (const item of items) {
+        const itemPath = path.join(fullPath, item);
+        const stats = await fs.stat(itemPath);
+        const relativePath = path.join(dirPath, item);
+
+        result.push({
+          name: item,
+          path: relativePath,
+          isDirectory: stats.isDirectory(),
+          size: stats.size,
+          modified: stats.mtime
+        });
+      }
+
+      return result;
     } catch (error) {
-      logger.error(`שגיאה בקריאת תיקייה ${relativeDirPath}: ${error.message}`);
+      logger.error(`Error listing directory ${dirPath}: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * מוחק קובץ מתיקיית העבודה
-   * @param {string} relativePath - נתיב יחסי לקובץ
-   * @returns {Promise<void>}
+   * Searches for files using patterns
+   * @param {string} pattern - Glob pattern
+   * @param {Object} options - Search options
+   * @returns {Array} Matching files
    */
-  async deleteFile(relativePath) {
+  async searchFiles(pattern, options = {}) {
     try {
-      const fullPath = this._normalizePath(relativePath);
-      logger.info(`מוחק קובץ: ${relativePath}`);
-      
-      await fs.remove(fullPath);
+      const fullPattern = path.join(this.workspacePath, pattern);
+      const files = await new Promise((resolve, reject) => {
+        glob(fullPattern, options, (err, matches) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(matches);
+          }
+        });
+      });
+
+      return files.map(file => {
+        const relativePath = path.relative(this.workspacePath, file);
+        return {
+          path: relativePath,
+          fullPath: file
+        };
+      });
     } catch (error) {
-      logger.error(`שגיאה במחיקת קובץ ${relativePath}: ${error.message}`);
+      logger.error(`Error searching files with pattern ${pattern}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Creates a directory
+   * @param {string} dirPath - Directory path, relative to workspace
+   * @returns {Object} Directory information
+   */
+  async createDirectory(dirPath) {
+    try {
+      const fullPath = path.join(this.workspacePath, dirPath);
+      await fs.ensureDir(fullPath);
+      logger.info(`Created directory: ${dirPath}`);
+
+      return {
+        path: dirPath,
+        fullPath
+      };
+    } catch (error) {
+      logger.error(`Error creating directory ${dirPath}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Deletes a directory
+   * @param {string} dirPath - Directory path, relative to workspace
+   * @param {Object} options - Options like recursive
+   * @returns {boolean} Success status
+   */
+  async deleteDirectory(dirPath, options = { recursive: false }) {
+    try {
+      const fullPath = path.join(this.workspacePath, dirPath);
+      if (!fs.existsSync(fullPath)) {
+        throw new Error(`Directory not found: ${dirPath}`);
+      }
+
+      if (options.recursive) {
+        await fs.remove(fullPath);
+      } else {
+        await fs.rmdir(fullPath);
+      }
+
+      logger.info(`Deleted directory: ${dirPath}`);
+      return true;
+    } catch (error) {
+      logger.error(`Error deleting directory ${dirPath}: ${error.message}`);
       throw error;
     }
   }
 }
 
-module.exports = new FileManager(); 
+// Create and export singleton instance
+const fileManager = new FileManager();
+module.exports = fileManager; 

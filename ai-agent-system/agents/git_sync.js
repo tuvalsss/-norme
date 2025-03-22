@@ -2,16 +2,16 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs-extra');
 const { EventEmitter } = require('events');
-const { logger } = require('../core/logger');
+const logger = require('../core/logger');
 const { v4: uuidv4 } = require('uuid');
 const memoryManager = require('../core/memoryManager');
 
-// יבוא סוכן הסיכום לצורך דיווח על שגיאות
+// Import summary agent for error reporting
 const summaryAgent = require('./summary');
 
 /**
- * סוכן סנכרון Git
- * אחראי על סנכרון הפרויקט עם GitHub באופן אוטומטי
+ * Git Sync Agent
+ * Responsible for automatically synchronizing the project with GitHub
  */
 class GitSyncAgent {
   constructor() {
@@ -20,673 +20,795 @@ class GitSyncAgent {
     this.events = new EventEmitter();
     this.logPrefix = '[git_sync_agent]';
     
-    // תיקיית ברירת מחדל לעבודה
+    // Default working directory
     this.workspacePath = path.resolve(__dirname, '../workspace');
     
-    // פרטי GitHub
+    // GitHub credentials
     this.gitUsername = process.env.GIT_USERNAME;
     this.gitEmail = process.env.GIT_EMAIL;
     this.gitToken = process.env.GIT_TOKEN;
     
-    // זמן בדקות בין סנכרונים
+    // Time in minutes between synchronizations
     this.syncInterval = 10;
     
-    // פרויקט פעיל
+    // Active project
     this.activeProject = null;
     
-    // מזהה המפגש הנוכחי
+    // Current session ID
     this.currentSessionId = null;
     
-    // זיכרון סוכן
+    // Agent memory
     this.memory = null;
   }
   
   /**
-   * הפעל את הסוכן
+   * Start the agent
    */
   async start() {
     if (this.active) {
-      logger.info(`${this.logPrefix} הסוכן כבר פעיל`);
+      logger.info(`${this.logPrefix} Agent is already active`);
       return;
     }
     
     try {
-      logger.info(`${this.logPrefix} מפעיל סוכן סנכרון Git`);
+      logger.info(`${this.logPrefix} Starting Git Sync Agent...`);
       
-      // יצירת מזהה מפגש חדש
-      this.currentSessionId = `session_${uuidv4()}`;
-      
-      // טען את זיכרון הסוכן
-      this.memory = await memoryManager.loadMemory('git_sync_agent');
-      
-      // רשום פעולת התחלה לזיכרון
-      await memoryManager.saveAction('git_sync_agent', this.currentSessionId, {
-        title: 'הפעלת סוכן',
-        description: 'הפעלת סוכן סנכרון Git',
-        params: {
-          timestamp: new Date().toISOString()
-        }
-      });
-      
-      // בדוק אם קיימים פרטי התחברות ל-Git
+      // Validate Git credentials
       this._validateGitCredentials();
       
-      // הגדר את תצורת ה-Git
+      // Generate new session ID
+      this.currentSessionId = `session_${uuidv4()}`;
+      
+      // Load agent memory
+      this.memory = await memoryManager.loadMemory('git_sync_agent');
+      
+      // Log session start
+      await this._logSessionStart();
+      
+      // Configure Git if credentials are available
       await this._configureGit();
       
-      // נסה לבצע סנכרון ראשוני
-      await this.syncRepository();
-      
-      // הגדר סנכרון תקופתי כל X דקות
-      this.intervalId = setInterval(() => {
-        this.syncRepository().catch(err => {
-          logger.error(`${this.logPrefix} שגיאה בסנכרון תקופתי: ${err.message}`);
-        });
+      // Start automatic synchronization
+      this.intervalId = setInterval(async () => {
+        try {
+          // Only sync if there's an active project
+          if (this.activeProject) {
+            await this.syncRepository();
+          }
+        } catch (error) {
+          logger.error(`${this.logPrefix} Error during automatic sync: ${error.message}`);
+          
+          // Log the error in memory
+          await this._logAction('auto_sync', {
+            projectPath: this.activeProject
+          }, {
+            success: false,
+            error: error.message
+          });
+        }
       }, this.syncInterval * 60 * 1000);
       
       this.active = true;
-      logger.info(`${this.logPrefix} סוכן סנכרון Git הופעל בהצלחה. סנכרון יתבצע כל ${this.syncInterval} דקות`);
-    } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בהפעלת הסוכן: ${error.message}`);
+      logger.info(`${this.logPrefix} Git Sync Agent started successfully (session: ${this.currentSessionId})`);
       
-      // רשום שגיאה לזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('git_sync_agent', this.currentSessionId, {
-          title: 'שגיאה בהפעלה',
-          description: `שגיאה בהפעלת הסוכן: ${error.message}`,
-          error: error.message
-        });
+      // Initial sync if there's an active project
+      if (this.activeProject) {
+        await this.syncRepository();
       }
-      
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error starting Git Sync Agent: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * הפסק את פעילות הסוכן
+   * Stop the agent
    */
   async stop() {
     if (!this.active) {
-      logger.info(`${this.logPrefix} הסוכן כבר כבוי`);
+      logger.info(`${this.logPrefix} Agent is already inactive`);
       return;
     }
     
-    logger.info(`${this.logPrefix} מכבה את סוכן סנכרון Git`);
-    
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
-    }
-    
-    // רשום פעולת סיום לזיכרון
-    if (this.currentSessionId) {
-      await memoryManager.saveAction('git_sync_agent', this.currentSessionId, {
-        title: 'כיבוי סוכן',
-        description: 'כיבוי סוכן סנכרון Git',
-        params: {
-          timestamp: new Date().toISOString()
-        }
-      });
+    try {
+      logger.info(`${this.logPrefix} Stopping Git Sync Agent...`);
       
-      // סיים את המפגש הנוכחי
-      await memoryManager.completeSession('git_sync_agent', this.currentSessionId, {
-        description: 'סיום מפגש עבודה עם סוכן הסנכרון',
-        status: 'completed'
-      });
+      // Clear automatic sync interval
+      if (this.intervalId) {
+        clearInterval(this.intervalId);
+        this.intervalId = null;
+      }
+      
+      // Log session end
+      await this._logSessionEnd();
+      
+      this.active = false;
+      this.currentSessionId = null;
+      
+      logger.info(`${this.logPrefix} Git Sync Agent stopped successfully`);
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error stopping Git Sync Agent: ${error.message}`);
+      throw error;
     }
-    
-    this.active = false;
-    logger.info(`${this.logPrefix} סוכן סנכרון Git כובה בהצלחה`);
   }
   
   /**
-   * הגדר את נתיב הפרויקט הפעיל
-   * @param {string} projectPath - נתיב לפרויקט
+   * Set the active project path
+   * @param {string} projectPath - Path to the project directory
    */
   async setProjectPath(projectPath) {
-    this.activeProject = projectPath;
-    logger.info(`${this.logPrefix} הוגדר פרויקט פעיל: ${projectPath}`);
-    
-    // רשום פעולת הגדרת פרויקט לזיכרון
-    if (this.currentSessionId) {
-      await memoryManager.saveAction('git_sync_agent', this.currentSessionId, {
-        title: 'הגדרת פרויקט',
-        description: `הגדרת פרויקט פעיל: ${projectPath}`,
-        params: {
-          projectPath
-        }
+    try {
+      const fullPath = path.resolve(projectPath);
+      logger.info(`${this.logPrefix} Setting project path: ${fullPath}`);
+      
+      // Check if directory exists
+      if (!await fs.pathExists(fullPath)) {
+        throw new Error(`Project directory does not exist: ${fullPath}`);
+      }
+      
+      // Check if it's a Git repository
+      const isGitRepo = await this._isGitRepository(fullPath);
+      
+      this.activeProject = fullPath;
+      
+      // Log the action
+      await this._logAction('set_project_path', {
+        projectPath: fullPath
+      }, {
+        success: true,
+        isGitRepo
       });
-    }
-    
-    // בדוק אם יש רפוזיטורי בנתיב זה
-    const isGitRepo = await this._isGitRepository(projectPath);
-    
-    if (!isGitRepo) {
-      logger.warn(`${this.logPrefix} הנתיב ${projectPath} אינו מכיל רפוזיטורי Git`);
+      
+      return {
+        path: fullPath,
+        isGitRepository: isGitRepo
+      };
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error setting project path: ${error.message}`);
+      throw error;
     }
   }
   
   /**
-   * סנכרן את הרפוזיטורי עם GitHub
+   * Synchronize the repository with GitHub
+   * Performs: pull -> add -> commit -> push
    */
   async syncRepository() {
     if (!this.activeProject) {
-      logger.warn(`${this.logPrefix} לא נבחר פרויקט פעיל לסנכרון`);
-      return;
+      throw new Error('No active project set. Please set a project path first.');
     }
     
-    // וודא שיש פרטי התחברות מינימליים
-    if (!this.gitUsername || !this.gitToken) {
-      logger.warn(`${this.logPrefix} חסרים פרטי התחברות לGitHub (username או token), לא ניתן לסנכרן`);
-      return;
+    if (!this.active) {
+      throw new Error('Git Sync Agent is not active. Please start the agent first.');
     }
     
-    logger.info(`${this.logPrefix} מתחיל סנכרון Git עבור ${this.activeProject}`);
+    // Get the original current directory to restore it later
+    const originalCwd = process.cwd();
     
     try {
-      // בדוק אם יש ריפוזיטורי Git
+      logger.info(`${this.logPrefix} Synchronizing repository at: ${this.activeProject}`);
+      
+      // Change to the project directory
+      process.chdir(this.activeProject);
+      
+      // Check if this is a Git repository
       const isGitRepo = await this._isGitRepository(this.activeProject);
-      
       if (!isGitRepo) {
-        logger.warn(`${this.logPrefix} הנתיב ${this.activeProject} אינו מכיל רפוזיטורי Git`);
-        return;
+        throw new Error(`Directory is not a Git repository: ${this.activeProject}`);
       }
       
-      // בדוק בזיכרון אם היה סנכרון מוצלח אחרון
-      let lastSuccessfulSync = null;
+      // Step 1: Pull changes from remote
+      const pullResult = await this._gitPull();
       
-      if (this.memory && this.memory.sessions) {
-        // חפש את הפעם האחרונה שבוצע סנכרון מוצלח על אותו פרויקט
-        for (const session of this.memory.sessions) {
-          for (const action of session.actions) {
-            if (action.title === 'סנכרון Git' && 
-                action.result && 
-                action.result.success && 
-                action.params && 
-                action.params.projectPath === this.activeProject) {
-              lastSuccessfulSync = action;
-              break;
-            }
-          }
-          if (lastSuccessfulSync) break;
-        }
-      }
-      
-      if (lastSuccessfulSync) {
-        logger.info(`${this.logPrefix} נמצא סנכרון מוצלח קודם מ-${new Date(lastSuccessfulSync.timestamp).toLocaleString()}`);
-      }
-      
-      // משוך שינויים מהריפוזיטורי המרוחק
-      await this._gitPull();
-      
-      // בדוק אם יש שינויים מקומיים
+      // Step 2: Check if there are local changes
       const hasChanges = await this._hasLocalChanges();
       
-      // מידע לזיכרון
-      const syncResult = {
-        projectPath: this.activeProject,
-        timestamp: new Date().toISOString(),
-        changes: {
-          pulled: 0, // יש להחליף בפועל עם מספר שינויים שנמשכו
-          added: 0,
-          modified: 0,
-          deleted: 0
-        }
-      };
-      
       if (hasChanges) {
-        // קבל רשימת שינויים
+        // Get the list of changes for commit message
         const changes = await this._getChanges();
         
-        // עדכון מידע על השינויים
-        syncResult.changes.added = (changes.match(/^\?\?/gm) || []).length;
-        syncResult.changes.modified = (changes.match(/^ M|^M /gm) || []).length;
-        syncResult.changes.deleted = (changes.match(/^ D|^D /gm) || []).length;
-        
-        // יצירת הודעת commit מתאימה
-        const commitMessage = this._generateCommitMessage(changes);
-        syncResult.commitMessage = commitMessage;
-        
-        // הוסף את השינויים ל-staging
+        // Step 3: Add all changes
         await this._gitAdd();
         
-        // בצע commit עם ההודעה
+        // Step 4: Create a commit
+        const commitMessage = this._generateCommitMessage(changes);
         await this._gitCommit(commitMessage);
         
-        // דחוף לריפוזיטורי המרוחק
+        // Step 5: Push changes to remote
         await this._gitPush();
         
-        logger.info(`${this.logPrefix} סנכרון הושלם בהצלחה. קומיט נדחף לשרת.`);
-        
-        // עדכון תוצאות הסנכרון
-        syncResult.success = true;
-        syncResult.pushed = true;
+        logger.info(`${this.logPrefix} Repository synchronized successfully with ${changes.length} changes`);
       } else {
-        logger.info(`${this.logPrefix} אין שינויים מקומיים, הפרויקט מעודכן`);
-        
-        // עדכון תוצאות הסנכרון
-        syncResult.success = true;
-        syncResult.pushed = false;
+        logger.info(`${this.logPrefix} No local changes to synchronize`);
       }
       
-      // רשום פעולת סנכרון לזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('git_sync_agent', this.currentSessionId, {
-          title: 'סנכרון Git',
-          description: `ביצוע סנכרון Git עבור פרויקט ${this.activeProject}`,
-          params: {
-            projectPath: this.activeProject
-          },
-          result: syncResult
-        });
-      }
+      // Log the successful sync
+      await this._logAction('sync_repository', {
+        projectPath: this.activeProject
+      }, {
+        success: true,
+        hasChanges,
+        pullResult
+      });
       
-      return syncResult;
+      return {
+        success: true,
+        hasChanges,
+        pullResult
+      };
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בסנכרון: ${error.message}`);
+      logger.error(`${this.logPrefix} Repository synchronization failed: ${error.message}`);
       
-      // רשום שגיאת סנכרון לזיכרון
-      if (this.currentSessionId) {
-        await memoryManager.saveAction('git_sync_agent', this.currentSessionId, {
-          title: 'שגיאת סנכרון',
-          description: `שגיאה בסנכרון Git עבור פרויקט ${this.activeProject}`,
-          params: {
-            projectPath: this.activeProject
-          },
+      // Handle merge conflicts specially
+      if (error.message.includes('merge conflict') || error.message.includes('CONFLICT')) {
+        await this._reportMergeConflict(error.message);
+      } else {
+        // Log the failed sync
+        await this._logAction('sync_repository', {
+          projectPath: this.activeProject
+        }, {
+          success: false,
           error: error.message
         });
-      }
-      
-      // בדוק אם מדובר בקונפליקט merge
-      if (error.message.includes('CONFLICT') || error.message.includes('merge conflict')) {
-        await this._reportMergeConflict(error.message);
+        
+        // Notify summary agent about the failure
+        try {
+          await summaryAgent.logEvent('git_sync_failure', {
+            projectPath: this.activeProject,
+            error: error.message,
+            timestamp: new Date().toISOString()
+          });
+        } catch (summaryError) {
+          logger.error(`${this.logPrefix} Failed to notify summary agent: ${summaryError.message}`);
+        }
       }
       
       throw error;
+    } finally {
+      // Restore the original working directory
+      process.chdir(originalCwd);
     }
   }
   
   /**
-   * אתחל רפוזיטורי Git בפרויקט
+   * Initialize a new Git repository
+   * @param {string} remoteUrl - GitHub repository URL
+   * @param {string} branch - Branch name (default: main)
    */
   async initRepository(remoteUrl, branch = 'main') {
     if (!this.activeProject) {
-      throw new Error('לא נבחר פרויקט פעיל');
+      throw new Error('No active project set. Please set a project path first.');
     }
     
-    logger.info(`${this.logPrefix} מאתחל רפוזיטורי Git בפרויקט ${this.activeProject}`);
+    if (!this.active) {
+      throw new Error('Git Sync Agent is not active. Please start the agent first.');
+    }
+    
+    // Get the original current directory to restore it later
+    const originalCwd = process.cwd();
     
     try {
-      // בדוק אם כבר יש רפוזיטורי Git
-      const isGitRepo = await this._isGitRepository(this.activeProject);
+      logger.info(`${this.logPrefix} Initializing Git repository at: ${this.activeProject}`);
       
+      // Change to the project directory
+      process.chdir(this.activeProject);
+      
+      // Check if this is already a Git repository
+      const isGitRepo = await this._isGitRepository(this.activeProject);
       if (isGitRepo) {
-        logger.info(`${this.logPrefix} רפוזיטורי Git כבר קיים בפרויקט`);
-        return;
+        throw new Error(`Directory is already a Git repository: ${this.activeProject}`);
       }
       
-      // אתחל רפוזיטורי Git חדש
+      // Initialize Git repository
       await this._executeGitCommand(['init']);
       
-      // הגדר תצורת משתמש מקומית
-      await this._executeGitCommand(['config', 'user.name', this.gitUsername]);
-      await this._executeGitCommand(['config', 'user.email', this.gitEmail]);
+      // Configure Git if needed
+      await this._configureGit();
       
-      // שנה את שם הענף הראשי אם צריך
-      await this._executeGitCommand(['branch', '-M', branch]);
-      
-      // הוסף את כל הקבצים
+      // Add all files
       await this._gitAdd();
       
-      // בצע commit ראשוני
-      await this._gitCommit('קומיט ראשוני');
+      // Initial commit
+      await this._gitCommit('Initial commit');
       
-      // הוסף remote אם סופק URL
-      if (remoteUrl) {
-        // החלף את ה-URL עם הטוקן
-        const authenticatedUrl = this._getAuthenticatedUrl(remoteUrl);
-        await this._executeGitCommand(['remote', 'add', 'origin', authenticatedUrl]);
-        
-        // דחוף לריפוזיטורי המרוחק
-        await this._gitPush('--set-upstream', 'origin', branch);
-      }
+      // Add remote
+      const authenticatedUrl = this._getAuthenticatedUrl(remoteUrl);
+      await this._executeGitCommand(['remote', 'add', 'origin', authenticatedUrl]);
       
-      logger.info(`${this.logPrefix} רפוזיטורי Git אותחל בהצלחה`);
+      // Set the branch
+      await this._executeGitCommand(['branch', '-M', branch]);
+      
+      // Push to remote
+      await this._gitPush('--set-upstream', 'origin', branch);
+      
+      logger.info(`${this.logPrefix} Git repository initialized successfully`);
+      
+      // Log the successful initialization
+      await this._logAction('init_repository', {
+        projectPath: this.activeProject,
+        remoteUrl,
+        branch
+      }, {
+        success: true
+      });
+      
+      return {
+        success: true,
+        projectPath: this.activeProject,
+        remoteUrl,
+        branch
+      };
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה באתחול רפוזיטורי Git: ${error.message}`);
+      logger.error(`${this.logPrefix} Repository initialization failed: ${error.message}`);
+      
+      // Log the failed initialization
+      await this._logAction('init_repository', {
+        projectPath: this.activeProject,
+        remoteUrl,
+        branch
+      }, {
+        success: false,
+        error: error.message
+      });
+      
       throw error;
+    } finally {
+      // Restore the original working directory
+      process.chdir(originalCwd);
     }
   }
   
   /**
-   * וודא שקיימים פרטי התחברות ל-Git
+   * Validate that Git credentials are available
    * @private
    */
   _validateGitCredentials() {
-    const missingCredentials = [];
+    if (!this.gitUsername || !this.gitEmail) {
+      logger.warn(`${this.logPrefix} Git username or email not configured. Some features may be limited.`);
+    }
     
-    if (!this.gitUsername) missingCredentials.push('GIT_USERNAME');
-    if (!this.gitEmail) missingCredentials.push('GIT_EMAIL');
-    if (!this.gitToken) missingCredentials.push('GIT_TOKEN');
-    
-    if (missingCredentials.length > 0) {
-      logger.warn(`${this.logPrefix} חסרים פרטי התחברות לGit: ${missingCredentials.join(', ')}`);
-      logger.warn(`${this.logPrefix} יתכן שיהיו בעיות בסנכרון עם GitHub`);
+    if (!this.gitToken) {
+      logger.warn(`${this.logPrefix} Git token not configured. Remote operations requiring authentication may fail.`);
     }
   }
   
   /**
-   * הגדר את תצורת ה-Git
+   * Configure Git with user credentials
    * @private
    */
   async _configureGit() {
+    // Skip if credentials are not available
+    if (!this.gitUsername || !this.gitEmail) {
+      return;
+    }
+    
     try {
-      // וודא שה-Git מוגדר כראוי - הגדרות מקומיות לפרויקט ספציפי
-      if (this.gitUsername) {
-        await this._executeGitCommand(['config', 'user.name', this.gitUsername]);
-      }
+      // Set Git user name and email
+      await this._executeGitCommand(['config', 'user.name', this.gitUsername]);
+      await this._executeGitCommand(['config', 'user.email', this.gitEmail]);
       
-      if (this.gitEmail) {
-        await this._executeGitCommand(['config', 'user.email', this.gitEmail]);
-      }
+      // Set credential helper to cache credentials
+      await this._executeGitCommand(['config', 'credential.helper', 'cache --timeout=3600']);
       
-      // הגדר credential helper לשמירת הטוקן
-      if (this.gitToken) {
-        await this._executeGitCommand(['config', 'credential.helper', 'store']);
-      }
-      
-      logger.info(`${this.logPrefix} תצורת Git הוגדרה בהצלחה`);
+      logger.info(`${this.logPrefix} Git configured with user: ${this.gitUsername}`);
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בהגדרת תצורת Git: ${error.message}`);
+      logger.error(`${this.logPrefix} Error configuring Git: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * החלף URL של GitHub ל-URL עם אימות
-   * @param {string} remoteUrl - URL של ריפוזיטורי GitHub
-   * @returns {string} URL עם אימות
+   * Get an authenticated URL for Git operations
+   * @param {string} remoteUrl - Original remote URL
+   * @returns {string} - Authenticated URL
    * @private
    */
   _getAuthenticatedUrl(remoteUrl) {
-    // החלף SSH URL ב-HTTPS URL
-    let url = remoteUrl;
-    if (url.startsWith('git@github.com:')) {
-      url = url.replace('git@github.com:', 'https://github.com/');
+    if (!this.gitToken) {
+      logger.warn(`${this.logPrefix} No Git token available, using plain URL`);
+      return remoteUrl;
     }
     
-    // הוסף אימות לURL HTTPS
-    if (url.startsWith('https://github.com/') && this.gitUsername && this.gitToken) {
-      url = url.replace('https://github.com/', `https://${this.gitUsername}:${this.gitToken}@github.com/`);
+    try {
+      const url = new URL(remoteUrl);
+      
+      if (url.protocol === 'https:') {
+        url.username = this.gitToken;
+        return url.toString();
+      }
+      
+      return remoteUrl;
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error creating authenticated URL: ${error.message}`);
+      return remoteUrl;
     }
-    
-    return url;
   }
   
   /**
-   * בדוק אם התיקייה מכילה רפוזיטורי Git
-   * @param {string} dirPath - נתיב התיקייה
-   * @returns {Promise<boolean>} האם מכיל רפוזיטורי Git
+   * Check if directory is a Git repository
+   * @param {string} dirPath - Directory path
+   * @returns {boolean} - Is Git repository
    * @private
    */
   async _isGitRepository(dirPath) {
     try {
-      const gitDir = path.join(dirPath, '.git');
-      return await fs.pathExists(gitDir);
+      await this._executeGitCommand(['rev-parse', '--is-inside-work-tree'], { cwd: dirPath });
+      return true;
     } catch (error) {
       return false;
     }
   }
   
   /**
-   * הרץ פקודת git pull
+   * Pull changes from remote repository
+   * @returns {object} - Pull result
    * @private
    */
   async _gitPull() {
     try {
-      logger.info(`${this.logPrefix} מושך שינויים מהשרת המרוחק...`);
-      await this._executeGitCommand(['pull']);
+      const output = await this._executeGitCommand(['pull']);
+      
+      return {
+        success: true,
+        message: output
+      };
     } catch (error) {
-      // בדוק אם יש קונפליקטים
-      if (error.message.includes('CONFLICT') || error.message.includes('merge conflict')) {
-        logger.error(`${this.logPrefix} נמצאו קונפליקטים במיזוג: ${error.message}`);
+      // If there's a merge conflict, we need to handle it specially
+      if (error.message.includes('merge conflict') || error.message.includes('CONFLICT')) {
         await this._reportMergeConflict(error.message);
       }
+      
       throw error;
     }
   }
   
   /**
-   * בדוק אם יש שינויים מקומיים
-   * @returns {Promise<boolean>} האם יש שינויים
+   * Check if repository has local changes
+   * @returns {boolean} - Has changes
    * @private
    */
   async _hasLocalChanges() {
     try {
-      const result = await this._executeGitCommand(['status', '--porcelain']);
-      return result.trim().length > 0;
+      const output = await this._executeGitCommand(['status', '--porcelain']);
+      return output.trim().length > 0;
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בבדיקת שינויים מקומיים: ${error.message}`);
-      return false;
+      logger.error(`${this.logPrefix} Error checking for local changes: ${error.message}`);
+      throw error;
     }
   }
   
   /**
-   * קבל רשימת שינויים
-   * @returns {Promise<string>} רשימת שינויים
+   * Get list of changed files
+   * @returns {Array} - List of changes
    * @private
    */
   async _getChanges() {
     try {
-      return await this._executeGitCommand(['status', '--porcelain']);
+      const output = await this._executeGitCommand(['status', '--porcelain']);
+      return output.trim().split('\n').filter(line => line.trim() !== '');
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בקבלת רשימת שינויים: ${error.message}`);
-      return '';
+      logger.error(`${this.logPrefix} Error getting changes: ${error.message}`);
+      return [];
     }
   }
   
   /**
-   * הוסף את כל השינויים ל-staging
+   * Add all changes to the index
    * @private
    */
   async _gitAdd() {
     try {
       await this._executeGitCommand(['add', '.']);
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בהוספת קבצים לstaging: ${error.message}`);
+      logger.error(`${this.logPrefix} Error adding files: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * בצע commit עם הודעה
-   * @param {string} message - הודעת הקומיט
+   * Commit changes
+   * @param {string} message - Commit message
    * @private
    */
   async _gitCommit(message) {
     try {
       await this._executeGitCommand(['commit', '-m', message]);
     } catch (error) {
-      // אם אין מה לעשות commit, זה לא שגיאה אמיתית
+      // If there are no changes to commit, it's not an error
       if (error.message.includes('nothing to commit')) {
-        logger.info(`${this.logPrefix} אין שינויים לביצוע commit`);
+        logger.info(`${this.logPrefix} No changes to commit`);
         return;
       }
       
-      logger.error(`${this.logPrefix} שגיאה בביצוע commit: ${error.message}`);
+      logger.error(`${this.logPrefix} Error committing changes: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * דחוף את השינויים לשרת המרוחק
-   * @param {...string} args - ארגומנטים נוספים לפקודה
+   * Push changes to remote
+   * @param {...string} args - Additional Git push arguments
    * @private
    */
   async _gitPush(...args) {
     try {
-      // קבל את הremote URL
-      const remoteUrl = await this._executeGitCommand(['remote', 'get-url', 'origin']);
+      // Start with base push command
+      const pushArgs = ['push'];
       
-      // החלף ל-URL עם אימות
-      const authenticatedUrl = this._getAuthenticatedUrl(remoteUrl.trim());
+      // Add any additional arguments
+      if (args && args.length > 0) {
+        pushArgs.push(...args);
+      }
       
-      // שנה את ה-remote URL
-      await this._executeGitCommand(['remote', 'set-url', 'origin', authenticatedUrl]);
-      
-      // דחוף לשרת
-      const pushArgs = ['push', ...args].filter(Boolean);
       await this._executeGitCommand(pushArgs);
-      
-      logger.info(`${this.logPrefix} דחיפה לשרת המרוחק הצליחה`);
     } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בדחיפה לשרת המרוחק: ${error.message}`);
+      // Handle specific error cases
+      if (error.message.includes('remote contains work that you do')) {
+        // Need to pull first
+        logger.warn(`${this.logPrefix} Remote contains new changes, attempting to pull first`);
+        await this._gitPull();
+        await this._gitPush(...args);
+        return;
+      }
+      
+      logger.error(`${this.logPrefix} Error pushing changes: ${error.message}`);
       throw error;
     }
   }
   
   /**
-   * יצור הודעת commit אוטומטית מתאימה לשינויים
-   * @param {string} changes - רשימת שינויים מgit status --porcelain
-   * @returns {string} הודעת commit
+   * Generate commit message based on changes
+   * @param {Array} changes - List of changes
+   * @returns {string} - Commit message
    * @private
    */
   _generateCommitMessage(changes) {
-    // ספור את סוגי השינויים
-    const addedCount = (changes.match(/^\?\?/gm) || []).length;
-    const modifiedCount = (changes.match(/^ M|^M /gm) || []).length;
-    const deletedCount = (changes.match(/^ D|^D /gm) || []).length;
-    
-    // צור הודעה בהתאם לשינויים
-    if (addedCount > 0 && modifiedCount === 0 && deletedCount === 0) {
-      return `נוספו ${addedCount} ${addedCount > 1 ? 'קבצים חדשים' : 'קובץ חדש'}`;
-    } else if (modifiedCount > 0 && addedCount === 0 && deletedCount === 0) {
-      return `עודכנו ${modifiedCount} ${modifiedCount > 1 ? 'קבצים' : 'קובץ'}`;
-    } else if (deletedCount > 0 && addedCount === 0 && modifiedCount === 0) {
-      return `נמחקו ${deletedCount} ${deletedCount > 1 ? 'קבצים' : 'קובץ'}`;
-    } else {
-      const total = addedCount + modifiedCount + deletedCount;
-      return `שינויים: ${addedCount > 0 ? `+${addedCount} ` : ''}${modifiedCount > 0 ? `~${modifiedCount} ` : ''}${deletedCount > 0 ? `-${deletedCount} ` : ''}(${total} קבצים)`;
+    if (!changes || changes.length === 0) {
+      return 'Automatic commit by Git Sync Agent';
     }
+    
+    const fileCount = changes.length;
+    
+    // Get list of changed file types
+    const fileTypes = changes.map(change => {
+      const match = change.match(/\s([A-Za-z0-9]+\.[A-Za-z0-9]+)$/);
+      return match ? path.extname(match[1]).slice(1) : 'unknown';
+    }).filter(Boolean);
+    
+    // Count occurrences of each file type
+    const typeCount = {};
+    fileTypes.forEach(type => {
+      typeCount[type] = (typeCount[type] || 0) + 1;
+    });
+    
+    // Create summary of changes
+    const typeSummary = Object.entries(typeCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([type, count]) => `${count} ${type}`)
+      .join(', ');
+    
+    return `Automatic update: ${fileCount} files changed (${typeSummary})`;
   }
   
   /**
-   * דווח על קונפליקט מיזוג לסוכן הסיכום
-   * @param {string} errorMessage - הודעת השגיאה
+   * Report merge conflict to the relevant agents
+   * @param {string} errorMessage - Git error message
    * @private
    */
   async _reportMergeConflict(errorMessage) {
+    logger.error(`${this.logPrefix} Merge conflict detected: ${errorMessage}`);
+    
     try {
-      // קבל רשימת קבצים עם קונפליקטים
-      const conflictingFiles = await this._executeGitCommand(['diff', '--name-only', '--diff-filter=U']);
+      // Get the list of conflicted files
+      const output = await this._executeGitCommand(['diff', '--name-only', '--diff-filter=U']);
+      const conflictedFiles = output.trim().split('\n').filter(Boolean);
       
-      // ודא שסוכן הסיכום פעיל
-      if (!summaryAgent.active) {
-        await summaryAgent.start();
-      }
+      // Log the conflict
+      await this._logAction('merge_conflict', {
+        projectPath: this.activeProject
+      }, {
+        success: false,
+        error: 'Merge conflict',
+        conflictedFiles
+      });
       
-      // הכן את דוח הקונפליקט
-      const conflictReport = {
-        type: 'merge_conflict',
+      // Check for previous conflicts in the same files
+      const previousConflicts = await this.findPreviousConflicts(conflictedFiles);
+      
+      // Notify summary agent
+      await summaryAgent.logEvent('git_merge_conflict', {
+        projectPath: this.activeProject,
+        conflictedFiles,
+        previousConflicts,
         timestamp: new Date().toISOString(),
-        repositoryPath: this.activeProject,
-        conflictingFiles: conflictingFiles.trim().split('\n').filter(Boolean),
-        errorMessage: errorMessage
-      };
+        errorMessage
+      });
       
-      // שלח את הדוח לסוכן הסיכום
-      if (typeof summaryAgent.reportIssue === 'function') {
-        await summaryAgent.reportIssue('git_merge_conflict', conflictReport);
+      logger.info(`${this.logPrefix} Reported merge conflict in ${conflictedFiles.length} files`);
+      
+      return {
+        conflictedFiles,
+        previousConflicts
+      };
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error reporting merge conflict: ${error.message}`);
+      
+      // Still try to notify summary agent with limited info
+      try {
+        await summaryAgent.logEvent('git_merge_conflict', {
+          projectPath: this.activeProject,
+          errorMessage,
+          timestamp: new Date().toISOString()
+        });
+      } catch (summaryError) {
+        logger.error(`${this.logPrefix} Failed to notify summary agent: ${summaryError.message}`);
       }
       
-      logger.warn(`${this.logPrefix} דווח על קונפליקט מיזוג לסוכן הסיכום. קבצים מושפעים: ${conflictingFiles}`);
-    } catch (error) {
-      logger.error(`${this.logPrefix} שגיאה בדיווח על קונפליקט מיזוג: ${error.message}`);
+      throw error;
     }
   }
   
   /**
-   * הרץ פקודת Git ומחזיר את הפלט שלה
-   * @param {string[]} args - ארגומנטים לפקודת git
-   * @returns {Promise<string>} הפלט של הפקודה
+   * Execute a Git command and return the output
+   * @param {Array} args - Git command arguments
+   * @param {Object} options - Command options
+   * @returns {string} - Command output
    * @private
    */
-  _executeGitCommand(args) {
+  _executeGitCommand(args, options = {}) {
     return new Promise((resolve, reject) => {
-      // וודא שיש פרויקט פעיל
-      if (!this.activeProject) {
-        return reject(new Error('לא הוגדר פרויקט פעיל'));
-      }
+      // Set default options
+      const cmdOptions = {
+        cwd: process.cwd(),
+        env: process.env,
+        ...options
+      };
       
-      const git = spawn('git', args, {
-        cwd: this.activeProject,
-        env: { ...process.env },
-        shell: true
-      });
+      logger.debug(`${this.logPrefix} Executing git ${args.join(' ')}`);
+      
+      const gitProcess = spawn('git', args, cmdOptions);
       
       let stdout = '';
       let stderr = '';
       
-      git.stdout.on('data', (data) => {
+      gitProcess.stdout.on('data', (data) => {
         stdout += data.toString();
       });
       
-      git.stderr.on('data', (data) => {
+      gitProcess.stderr.on('data', (data) => {
         stderr += data.toString();
       });
       
-      git.on('close', (code) => {
+      gitProcess.on('close', (code) => {
         if (code === 0) {
-          resolve(stdout);
+          resolve(stdout.trim());
         } else {
           reject(new Error(`Git command failed with code ${code}: ${stderr}`));
         }
       });
       
-      git.on('error', (err) => {
-        reject(new Error(`Failed to execute git command: ${err.message}`));
+      gitProcess.on('error', (error) => {
+        reject(new Error(`Failed to execute Git command: ${error.message}`));
       });
     });
   }
   
   /**
-   * חפש בזיכרון אם היו קונפליקטים קודמים בקבצים מסוימים
-   * @param {string[]} filePaths - רשימת נתיבי קבצים לבדיקה
-   * @returns {Promise<Array>} רשימת קונפליקטים קודמים
+   * Find previous conflicts in the given files
+   * @param {Array} filePaths - Paths of conflicted files
+   * @returns {Array} - Previous conflicts
    */
   async findPreviousConflicts(filePaths) {
-    if (!this.memory || !this.memory.sessions || !filePaths.length) {
-      return [];
-    }
-    
-    const previousConflicts = [];
-    
-    // חפש קונפליקטים קודמים במפגשים
-    for (const session of this.memory.sessions) {
-      for (const action of session.actions) {
-        if (action.title === 'שגיאת סנכרון' && action.error && action.error.includes('CONFLICT')) {
-          // אם יש מידע על קבצים עם קונפליקטים
-          if (action.result && action.result.conflictingFiles) {
-            const conflictingFiles = action.result.conflictingFiles;
-            
-            // בדוק אם יש חפיפה בין הקבצים הנוכחיים לקבצים קודמים
-            const overlappingFiles = filePaths.filter(file => 
-              conflictingFiles.includes(file)
+    try {
+      if (!this.memory || !filePaths || filePaths.length === 0) {
+        return [];
+      }
+      
+      const previousConflicts = [];
+      
+      // Get all merge conflict actions from memory
+      const allSessions = this.memory.sessions || {};
+      
+      for (const sessionId in allSessions) {
+        const session = allSessions[sessionId];
+        if (!session.actions) continue;
+        
+        for (const action of session.actions) {
+          if (action.type === 'merge_conflict' && action.result && action.result.conflictedFiles) {
+            // Check if any of the current conflicted files had conflicts before
+            const sameFiles = action.result.conflictedFiles.filter(file => 
+              filePaths.includes(file)
             );
             
-            if (overlappingFiles.length > 0) {
+            if (sameFiles.length > 0) {
               previousConflicts.push({
                 timestamp: action.timestamp,
-                sessionId: session.id,
-                files: overlappingFiles
+                files: sameFiles,
+                sessionId
               });
             }
           }
         }
       }
+      
+      return previousConflicts;
+    } catch (error) {
+      logger.error(`${this.logPrefix} Error finding previous conflicts: ${error.message}`);
+      return [];
+    }
+  }
+  
+  /**
+   * Log session start
+   * @private
+   */
+  async _logSessionStart() {
+    if (!this.memory) return;
+    
+    if (!this.memory.sessions) {
+      this.memory.sessions = {};
     }
     
-    return previousConflicts;
+    const startTime = new Date().toISOString();
+    
+    this.memory.sessions[this.currentSessionId] = {
+      startTime,
+      endTime: null,
+      actions: [],
+      status: 'active'
+    };
+    
+    await memoryManager.saveMemory('git_sync_agent', this.memory);
+    
+    logger.debug(`${this.logPrefix} New session started (${this.currentSessionId})`);
+  }
+  
+  /**
+   * Log session end
+   * @private
+   */
+  async _logSessionEnd() {
+    if (!this.memory || !this.currentSessionId) return;
+    
+    const session = this.memory.sessions[this.currentSessionId];
+    if (!session) return;
+    
+    session.endTime = new Date().toISOString();
+    session.status = 'completed';
+    
+    await memoryManager.saveMemory('git_sync_agent', this.memory);
+    
+    logger.debug(`${this.logPrefix} Session closed (${this.currentSessionId})`);
+  }
+  
+  /**
+   * Log agent action
+   * @private
+   */
+  async _logAction(actionType, parameters, result) {
+    if (!this.memory || !this.currentSessionId) return;
+    
+    const session = this.memory.sessions[this.currentSessionId];
+    if (!session) return;
+    
+    if (!session.actions) {
+      session.actions = [];
+    }
+    
+    const timestamp = new Date().toISOString();
+    
+    const action = {
+      id: `action_${uuidv4()}`,
+      type: actionType,
+      parameters,
+      timestamp,
+      result
+    };
+    
+    session.actions.push(action);
+    
+    await memoryManager.saveMemory('git_sync_agent', this.memory);
   }
 }
 

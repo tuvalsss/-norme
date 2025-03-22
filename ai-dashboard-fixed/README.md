@@ -1,70 +1,174 @@
-# Getting Started with Create React App
+# מערכת בקרת סוכני AI
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+מערכת דאשבורד לניהול, בקרה והפעלה של סוכני AI במערכת אוטומטית מבוססת ממשק גרפי.
 
-## Available Scripts
+## יכולות המערכת
 
-In the project directory, you can run:
+### ניהול פרויקטים
+- **בחירת פרויקט פעיל** - אפשרות לבחור פרויקט קיים מרשימת הפרויקטים
+- **הוספת פרויקט חדש** - הוספת פרויקט למערכת עם הגדרת שם ונתיב
+- **סייר קבצים מובנה** - הצגת מבנה הקבצים והתיקיות של הפרויקט הפעיל
+- **פתיחת קבצים** - פתיחת קבצים בעורך ברירת המחדל של המערכת בלחיצה כפולה
 
-### `npm start`
+### ניהול סוכנים
+- **הצגת סטטוס** - הצגת מידע על סוכני AI במערכת וסטטוס פעילותם (פעיל/כבוי)
+- **הפעלה וכיבוי** - שליטה על הפעלה וכיבוי של סוכנים בודדים
+- **זיכרון** - צפייה בזיכרון הסוכן וביצוע חיפוש
+- **תזמון** - יצירה וניהול של משימות מתוזמנות אוטומטיות
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+### שורת פקודה ראשית
+- **ביצוע פקודות** - ממשק שורת פקודה מרכזי להפעלת פקודות מערכת
+- **אישור פקודות** - מנגנון אישור פקודות באמצעות חלון אישור לפני הפעלה
+- **הפעלת סוכנים** - שליטה בכל הסוכנים באמצעות פקודות מרכזיות
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+## ארכיטקטורת המערכת
 
-### `npm test`
+### צד לקוח (React)
+- **רכיבים עיקריים**:
+  - `ProjectSelector.js` - ניהול ובחירת פרויקטים
+  - `FileExplorer.js` - סייר קבצים ותיקיות
+  - `AgentComponent.js` - ניהול ושליטה בסוכני AI
+  - `CommandLine.js` - שורת פקודה מרכזית (תת-רכיב ב-`AgentComponent`)
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### צד שרת (Node.js)
+- **נקודות קצה עיקריות**:
+  - `/projects` - ניהול רשימת פרויקטים
+  - `/workspace` - ניהול הפרויקט הפעיל
+  - `/agents` - קבלת רשימת סוכנים וסטטוס פעילות
+  - `/run-agent`, `/stop-agent` - הפעלה וכיבוי סוכנים
+  - `/execute-command` - הרצת פקודות מהדאשבורד
+  - `/active-project/files` - קבלת מבנה קבצים של הפרויקט
+  - `/open-file` - פתיחת קבצים בעורך חיצוני
 
-### `npm run build`
+## התקנה והפעלה
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+### דרישות מקדימות
+- Node.js 14 ומעלה
+- npm 6 ומעלה
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+### צעדי התקנה
+1. הורד את הפרויקט באמצעות Git:
+   ```
+   git clone <repository-url>
+   cd ai-dashboard-fixed
+   ```
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+2. התקן את חבילות הספריות:
+   ```
+   npm install
+   ```
 
-### `npm run eject`
+3. **הפעלת השרת**:
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+   **Windows PowerShell**:
+   ```powershell
+   cd ai-dashboard-fixed
+   node server/server.js
+   ```
+   
+   **Windows CMD**:
+   ```cmd
+   cd ai-dashboard-fixed
+   node server/server.js
+   ```
+   
+   **Linux/Mac**:
+   ```bash
+   cd ai-dashboard-fixed
+   node server/server.js
+   ```
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+4. **הפעלת הדאשבורד** (בחלון נפרד):
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+   **Windows PowerShell**:
+   ```powershell
+   cd ai-dashboard-fixed
+   npm start
+   ```
+   
+   **Windows CMD**:
+   ```cmd
+   cd ai-dashboard-fixed
+   npm start
+   ```
+   
+   **Linux/Mac**:
+   ```bash
+   cd ai-dashboard-fixed
+   npm start
+   ```
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+   > **חשוב**: בסביבת Windows PowerShell אין להשתמש בתחביר `&&` לשרשור פקודות, יש להריץ כל פקודה בנפרד.
 
-## Learn More
+5. גש ל-`http://localhost:3000` בדפדפן שלך.
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+## הפעלת המערכת
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+ניתן להפעיל את המערכת באחת מהדרכים הבאות:
 
-### Code Splitting
+### הפעלה באמצעות CMD
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+1. הפעל את הקובץ `start.bat` מתיקיית הפרויקט הראשית
 
-### Analyzing the Bundle Size
+### הפעלה באמצעות PowerShell
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+באחת מהדרכים הבאות:
+1. הפעל את הקובץ `start.cmd` מתיקיית הפרויקט הראשית
+2. פתח PowerShell והרץ את הקובץ `start.ps1` מתיקיית הפרויקט הראשית
 
-### Making a Progressive Web App
+### לעצירת המערכת
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+באחת מהדרכים הבאות:
+1. הפעל את הקובץ `stop.bat` לסגירת כל התהליכים (CMD)
+2. הפעל את הקובץ `stop.cmd` או `stop.ps1` לסגירת כל התהליכים (PowerShell)
 
-### Advanced Configuration
+## הגדרת סוכנים חדשים
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+להוספת סוכן חדש למערכת:
+1. צור קובץ הפעלה חדש בתיקיית `agents/` בפורמט `<agent_name>.bat` (Windows) או `<agent_name>.sh` (Linux/Mac)
+2. הגדר את סביבת העבודה והפקודות בקובץ ההפעלה
+3. הוסף את שם הסוכן למערך `AGENTS` בקובץ `server/server.js`
 
-### Deployment
+## פתרון בעיות
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+### בעיית התחברות לשרת
+- אם מופיעה הודעת "אין חיבור לשרת":
+  1. וודא שהשרת רץ ומאזין בפורט 3001
+  2. בדוק שאין חסימות firewall
+  3. אל תשתמש בתחביר `&&` ב-PowerShell להרצת פקודות מרובות
+  4. וודא שיש הרשאות הפעלה לתיקיות הפרויקט
 
-### `npm run build` fails to minify
+### בעיית הצגת קבצים
+- אם אינך רואה את רשימת הקבצים תחת פרויקט:
+  1. וודא שהפרויקט הפעיל הוגדר נכון במערכת
+  2. בדוק את הרשאות הגישה לתיקיית הפרויקט
+  3. וודא שקיים קובץ `workspace.json` בתיקיית האפליקציה
+  4. רענן את הדף או לחץ על הפרויקט מחדש
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+### בעיות עם הפעלת סוכנים
+- אם לא ניתן להפעיל סוכן:
+  1. וודא שקובץ ההפעלה קיים בתיקיית `agents/`
+  2. בדוק את ההרשאות של קובץ ההפעלה
+  3. בדוק את לוגים בתיקיית `logs/`
+  4. וודא שקובצי `.bat` או `.sh` מוגדרים עם הרשאות הפעלה
+
+### שגיאת 404 או 500
+- אם מופיעות שגיאות HTTP:
+  1. וודא שהשרת רץ בפורט הנכון (3001)
+  2. בדוק שכל בקשות ה-API מופנות ל-`http://localhost:3001`
+  3. בדוק את לוגים של שגיאות השרת בקונסול
+  4. במקרה של שגיאת 500, בדוק את קבצי הלוג בתיקיית `logs/`
+
+### קבצי הפעלה חסרים
+- אם הסוכנים לא נטענים:
+  1. וודא שקיימת תיקיית `agents/` עם קבצי הפעלה
+  2. צור קבצי `.bat` ריקים בסיסיים אם לא קיימים
+  3. וודא שמשתמשים בשמות קבצים תואמים למערך `AGENTS` בקוד
+
+## הערות פיתוח ופיתוח עתידי
+- המערכת מעוצבת להרחבה קלה עם סוכנים חדשים
+- ניתן להוסיף יכולות חדשות באמצעות הרחבת ה-API וממשק המשתמש
+- פיתוח עתידי מתוכנן: הוספת גרפים וויזואליזציה של פעילות הסוכנים
+
+## רישיון
+פרויקט זה מופץ תחת רישיון MIT.

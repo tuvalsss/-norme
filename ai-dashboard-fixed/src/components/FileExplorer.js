@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 
 /**
- * רכיב עץ קבצים שמציג את כל הקבצים בפרויקט ומאפשר פתיחה בעורך חיצוני
+ * File tree component that displays all files in a project and allows opening in external editor
  */
 const FileExplorer = ({ activeProject }) => {
   const [files, setFiles] = useState([]);
@@ -9,7 +9,7 @@ const FileExplorer = ({ activeProject }) => {
   const [error, setError] = useState(null);
   const [expandedFolders, setExpandedFolders] = useState({});
 
-  // טען את מבנה הקבצים כאשר הפרויקט הפעיל משתנה
+  // Load the file structure when the active project changes
   useEffect(() => {
     if (activeProject) {
       fetchFiles();
@@ -18,31 +18,57 @@ const FileExplorer = ({ activeProject }) => {
     }
   }, [activeProject]);
 
-  // קבל את מבנה הקבצים מהשרת
+  // Get the file structure from the server
   const fetchFiles = async () => {
     try {
       setLoading(true);
-      const response = await fetch("http://localhost:5001/active-project/files");
+      const response = await fetch("http://localhost:3001/active-project/files");
       const data = await response.json();
 
       if (!data.success) {
-        throw new Error(data.error || "שגיאה בטעינת קבצים");
+        throw new Error(data.error || "Error loading files");
       }
 
       setFiles(data.files || []);
       setError(null);
     } catch (err) {
-      console.error("שגיאה בטעינת מבנה קבצים:", err);
-      setError("לא ניתן לטעון את מבנה הקבצים. אנא נסה שוב.");
+      console.error("Error loading file structure:", err);
+      setError("Could not load the file structure. Please try again.");
+      
+      // When there's an error, try an alternative method to get the file structure
+      try {
+        if (activeProject && activeProject.path) {
+          const fallbackResponse = await fetch("http://localhost:3001/dir-structure", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ 
+              path: activeProject.path 
+            }),
+          });
+          
+          const fallbackData = await fallbackResponse.json();
+          
+          if (fallbackData.success && fallbackData.files) {
+            console.log("Retrieved alternative file structure");
+            setFiles(fallbackData.files);
+            setError(null);
+          }
+        }
+      } catch (fallbackErr) {
+        console.error("Error in fallback attempt:", fallbackErr);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  // פתח קובץ ב-VS Code
+  // Open file in default editor
   const handleOpenFile = async (filePath) => {
     try {
-      const response = await fetch("http://localhost:5001/open-file", {
+      console.log("Opening file:", filePath);
+      const response = await fetch("http://localhost:3001/open-file", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -52,42 +78,21 @@ const FileExplorer = ({ activeProject }) => {
       const data = await response.json();
 
       if (!data.success) {
-        throw new Error(data.error || "שגיאה בפתיחת קובץ");
+        throw new Error(data.error || "Error opening file");
       }
     } catch (err) {
-      console.error("שגיאה בפתיחת קובץ:", err);
-      alert(`שגיאה בפתיחת קובץ: ${err.message}`);
+      console.error("Error opening file:", err);
+      alert(`Error opening file: ${err.message}`);
     }
   };
 
-  // פונקציה לקבלת אייקון עבור סוג קובץ
-  const getFileIcon = (fileName) => {
+  // Function to get icon for file type
+  const getFileType = (fileName) => {
     const extension = fileName.split('.').pop().toLowerCase();
-    
-    const icons = {
-      js: '📜',
-      jsx: '⚛️',
-      ts: '🔷',
-      tsx: '🔶',
-      json: '📋',
-      html: '🌐',
-      css: '🎨',
-      scss: '💅',
-      md: '📝',
-      jpg: '🖼️',
-      jpeg: '🖼️',
-      png: '🖼️',
-      gif: '🖼️',
-      svg: '🔲',
-      pdf: '📑',
-      zip: '📦',
-      default: '📄'
-    };
-    
-    return icons[extension] || icons.default;
+    return extension || 'unknown';
   };
 
-  // הפעל/בטל פתיחת תיקייה
+  // Toggle folder expansion
   const toggleFolder = (path) => {
     setExpandedFolders((prev) => ({
       ...prev,
@@ -95,17 +100,19 @@ const FileExplorer = ({ activeProject }) => {
     }));
   };
 
-  // רנדור רקורסיבי של עץ קבצים
+  // Recursive rendering of file tree
   const renderFileTree = (items, level = 0) => {
     return items
       .sort((a, b) => {
-        // תיקיות קודם, אח"כ קבצים (לפי א"ב)
+        // Folders first, then files (alphabetically)
         if (a.type === 'directory' && b.type !== 'directory') return -1;
         if (a.type !== 'directory' && b.type === 'directory') return 1;
         return a.name.localeCompare(b.name);
       })
       .map((item) => {
         const paddingLeft = `${level * 1.2 + 0.5}rem`;
+        // Use relativePath for display and full path for actions
+        const displayPath = item.relativePath || item.name;
 
         if (item.type === 'directory') {
           const isExpanded = expandedFolders[item.path] || false;
@@ -113,12 +120,12 @@ const FileExplorer = ({ activeProject }) => {
           return (
             <React.Fragment key={item.path}>
               <div
-                className="flex items-center py-1 hover:bg-gray-800 cursor-pointer"
+                className="flex items-center py-1 hover:bg-gray-900 cursor-pointer border-b border-gray-900"
                 style={{ paddingLeft }}
                 onClick={() => toggleFolder(item.path)}
               >
-                <span className="mr-1">{isExpanded ? '📂' : '📁'}</span>
-                <span>{item.name}</span>
+                <span className="w-4 h-4 mr-2 inline-block border-r border-b border-gray-600" style={{ transform: isExpanded ? 'rotate(45deg)' : 'rotate(-45deg)' }}></span>
+                <span className="truncate" title={displayPath}>{item.name}</span>
               </div>
               
               {isExpanded && item.children && (
@@ -129,61 +136,64 @@ const FileExplorer = ({ activeProject }) => {
             </React.Fragment>
           );
         } else {
+          const fileType = getFileType(item.name);
           return (
             <div
               key={item.path}
-              className="flex items-center py-1 hover:bg-gray-800 cursor-pointer"
+              className="flex items-center py-1 hover:bg-gray-900 cursor-pointer border-b border-gray-900"
               style={{ paddingLeft }}
               onDoubleClick={() => handleOpenFile(item.path)}
+              onClick={() => console.log(`Selected file: ${item.path}`)}
             >
-              <span className="mr-1">{getFileIcon(item.name)}</span>
-              <span>{item.name}</span>
+              <span className="w-2 h-2 mr-2 inline-block bg-gray-600 rounded-full"></span>
+              <span className="truncate" title={displayPath}>{item.name}</span>
+              <span className="ml-auto text-xs text-gray-500">{fileType}</span>
             </div>
           );
         }
       });
   };
 
-  // כאשר אין פרויקט פעיל
+  // When there's no active project
   if (!activeProject) {
     return (
-      <div className="bg-gray-900 border border-gray-700 rounded-lg p-4 shadow-xl relative">
-        <h2 className="text-2xl font-bold text-gray-400 mb-3">📂 סייר קבצים</h2>
-        <p className="text-yellow-400">יש לבחור פרויקט כדי לצפות בקבצים.</p>
+      <div className="bg-black border border-gray-800 rounded-lg p-4 shadow-xl relative">
+        <h2 className="text-2xl font-bold text-gray-400 mb-3">File Explorer</h2>
+        <p className="text-gray-400">Please select a project to view files.</p>
       </div>
     );
   }
 
   return (
-    <div className="bg-gray-900 border border-gray-700 rounded-lg p-4 shadow-xl relative">
-      <h2 className="text-2xl font-bold text-gray-400 mb-3">📂 סייר קבצים</h2>
+    <div className="bg-black border border-gray-800 rounded-lg p-4 shadow-xl relative">
+      <h2 className="text-2xl font-bold text-gray-400 mb-3">File Explorer</h2>
       
       <p className="text-gray-400 text-sm mb-3">
-        <small>לחץ פעמיים על קובץ כדי לפתוח אותו ב-VS Code</small>
+        <small>Double-click a file to open it in your code editor</small>
       </p>
 
-      {loading && <p className="text-gray-400">טוען מבנה קבצים...</p>}
+      {loading && <p className="text-gray-400">Loading file structure...</p>}
       
-      {error && <p className="text-red-500">{error}</p>}
+      {error && <p className="text-gray-500">{error}</p>}
 
       {!loading && !error && files.length === 0 && (
-        <p className="text-yellow-400">
-          הפרויקט ריק או שאין גישה לקבצים.
+        <p className="text-gray-400">
+          Project is empty or files are not accessible.
         </p>
       )}
 
       {!loading && !error && files.length > 0 && (
-        <div className="file-tree text-gray-300 overflow-auto max-h-96 rounded-md bg-black p-2">
+        <div className="file-tree text-gray-300 overflow-auto max-h-96 rounded-md bg-black border border-gray-800 p-2">
           {renderFileTree(files)}
         </div>
       )}
       
-      <div className="mt-4 bg-gray-800 p-2 rounded-md text-sm">
+      <div className="mt-4 bg-black border border-gray-800 p-2 rounded-md text-sm">
         <p className="text-gray-400">
-          שם הפרויקט: <span className="text-white">{activeProject.name}</span>
+          Active Project: <span className="text-white">{activeProject.name}</span>
         </p>
-        <p className="text-gray-400 truncate text-xs">
-          נתיב: <span className="text-gray-300">{activeProject.path}</span>
+        <p className="text-gray-400 text-xs truncate">
+          Working Directory: <span className="text-gray-300">WORKSPACE</span>
         </p>
       </div>
     </div>

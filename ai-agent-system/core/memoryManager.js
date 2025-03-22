@@ -1,17 +1,22 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { logger } = require('./logger');
+const NodeCache = require('node-cache');
+const logger = require('./logger');
 const { getConfig } = require('../config/config');
 
 /**
- * מנהל זיכרון לסוכנים - מאפשר שמירה וטעינה של זיכרון בפורמטים שונים
+ * Memory management system for AI agents
+ * Handles short-term and long-term memory storage and retrieval
  */
 class MemoryManager {
   constructor() {
     this.logPrefix = '[memory_manager]';
     this.memoryDir = path.join(process.cwd(), 'memory');
     this.memoryMode = process.env.MEMORY_MODE || 'json';
-    this.cache = {}; // מטמון זיכרון להפחתת קריאות מהדיסק
+    this.cache = new NodeCache({ 
+      stdTTL: 3600, // Default TTL: 1 hour
+      checkperiod: 600 // Check for expired items every 10 minutes
+    });
     this.queryCache = {}; // מטמון לשאילתות נפוצות
     
     // פורמט חותמות זמן
@@ -23,7 +28,391 @@ class MemoryManager {
     // וודא שהתיקייה קיימת
     fs.ensureDirSync(this.memoryDir);
     
-    logger.info(`${this.logPrefix} מנהל הזיכרון אותחל במצב: ${this.memoryMode}`);
+    // Agent-specific memories
+    this.agentMemories = {};
+    
+    logger.info(`${this.logPrefix} Memory Manager initialized`);
+  }
+  
+  /**
+   * Creates a new memory space for an agent
+   * @param {string} agentId - Unique identifier for the agent
+   * @returns {Object} Memory interface for the agent
+   */
+  createAgentMemory(agentId) {
+    if (this.agentMemories[agentId]) {
+      return this.agentMemories[agentId];
+    }
+    
+    // Create agent's memory directory
+    const agentMemoryPath = path.join(this.memoryDir, agentId);
+    fs.ensureDirSync(agentMemoryPath);
+    
+    // Initialize agent's memory cache
+    const agentCache = new NodeCache({ stdTTL: 7200 }); // 2 hours TTL for agent memory
+    
+    // Create memory interface
+    const memory = {
+      // Add a memory entry
+      addEntry: (content, metadata = {}) => this._addMemoryEntry(agentId, content, metadata),
+      
+      // Search for memories
+      search: (query, options = {}) => this._searchMemories(agentId, query, options),
+      
+      // Get a specific memory by ID
+      get: (memoryId) => this._getMemory(agentId, memoryId),
+      
+      // Store temporary data
+      store: (key, value, ttl = 3600) => {
+        const fullKey = `${agentId}:${key}`;
+        agentCache.set(fullKey, value, ttl);
+        return true;
+      },
+      
+      // Retrieve temporary data
+      retrieve: (key) => {
+        const fullKey = `${agentId}:${key}`;
+        return agentCache.get(fullKey);
+      },
+      
+      // Delete a memory entry
+      delete: (memoryId) => this._deleteMemory(agentId, memoryId),
+      
+      // Clear all agent memories
+      clear: () => this._clearAgentMemory(agentId)
+    };
+    
+    this.agentMemories[agentId] = memory;
+    logger.info(`${this.logPrefix} Created memory for agent: ${agentId}`);
+    
+    return memory;
+  }
+  
+  /**
+   * Adds a memory entry for an agent
+   * @param {string} agentId - Agent identifier
+   * @param {string} content - Memory content
+   * @param {Object} metadata - Additional metadata
+   * @returns {string} ID of the created memory
+   * @private
+   */
+  _addMemoryEntry(agentId, content, metadata = {}) {
+    try {
+      const timestamp = new Date().toISOString();
+      const memoryId = `mem_${timestamp}_${Math.random().toString(36).substring(2, 10)}`;
+      
+      const entry = {
+        id: memoryId,
+        agentId,
+        content,
+        metadata,
+        created: timestamp,
+        accessed: timestamp,
+        accessCount: 0
+      };
+      
+      // Store in both cache and file
+      const cacheKey = `memory:${agentId}:${memoryId}`;
+      this.cache.set(cacheKey, entry);
+      
+      // Write to disk
+      const filePath = path.join(this.memoryDir, agentId, `${memoryId}.json`);
+      fs.writeJsonSync(filePath, entry);
+      
+      // Update memory index
+      this._updateMemoryIndex(agentId, entry);
+      
+      logger.info(`${this.logPrefix} Added memory for agent ${agentId}: ${memoryId}`);
+      return memoryId;
+    } catch (error) {
+      logger.error(`${this.logPrefix} Failed to add memory for agent ${agentId}: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Retrieves a specific memory
+   * @param {string} agentId - Agent identifier
+   * @param {string} memoryId - Memory identifier
+   * @returns {Object} The memory object if found
+   * @private
+   */
+  _getMemory(agentId, memoryId) {
+    try {
+      // Try to get from cache first
+      const cacheKey = `memory:${agentId}:${memoryId}`;
+      let memory = this.cache.get(cacheKey);
+      
+      // If not in cache, try to read from disk
+      if (!memory) {
+        const filePath = path.join(this.memoryDir, agentId, `${memoryId}.json`);
+        if (fs.existsSync(filePath)) {
+          memory = fs.readJsonSync(filePath);
+          // Add to cache for future access
+          this.cache.set(cacheKey, memory);
+        } else {
+          logger.warn(`${this.logPrefix} Memory ${memoryId} not found for agent ${agentId}`);
+          return null;
+        }
+      }
+      
+      // Update access metadata
+      memory.accessed = new Date().toISOString();
+      memory.accessCount += 1;
+      
+      // Update file with new access data
+      const filePath = path.join(this.memoryDir, agentId, `${memoryId}.json`);
+      fs.writeJsonSync(filePath, memory);
+      
+      return memory;
+    } catch (error) {
+      logger.error(`${this.logPrefix} Failed to get memory ${memoryId} for agent ${agentId}: ${error.message}`);
+      return null;
+    }
+  }
+  
+  /**
+   * Searches for memories matching a query
+   * @param {string} agentId - Agent identifier
+   * @param {string} query - Search query
+   * @param {Object} options - Search options
+   * @returns {Array} Matching memories
+   * @private
+   */
+  _searchMemories(agentId, query, options = {}) {
+    try {
+      const {
+        limit = 10,
+        offset = 0,
+        sortBy = 'created',
+        sortOrder = 'desc'
+      } = options;
+      
+      // Simple search implementation
+      // In a production system, this would use a vector DB or search index
+      const memoryDir = path.join(this.memoryDir, agentId);
+      const files = fs.readdirSync(memoryDir).filter(f => f.endsWith('.json'));
+      
+      const results = [];
+      
+      for (const file of files) {
+        const filePath = path.join(memoryDir, file);
+        const memory = fs.readJsonSync(filePath);
+        
+        // Check if the query matches content or metadata
+        const contentMatch = memory.content.toLowerCase().includes(query.toLowerCase());
+        
+        // Check metadata match
+        let metadataMatch = false;
+        if (memory.metadata) {
+          const metadataStr = JSON.stringify(memory.metadata).toLowerCase();
+          metadataMatch = metadataStr.includes(query.toLowerCase());
+        }
+        
+        if (contentMatch || metadataMatch) {
+          results.push(memory);
+        }
+      }
+      
+      // Sort results
+      results.sort((a, b) => {
+        if (sortOrder.toLowerCase() === 'asc') {
+          return a[sortBy] > b[sortBy] ? 1 : -1;
+        } else {
+          return a[sortBy] < b[sortBy] ? 1 : -1;
+        }
+      });
+      
+      // Apply pagination
+      return results.slice(offset, offset + limit);
+    } catch (error) {
+      logger.error(`${this.logPrefix} Failed to search memories for agent ${agentId}: ${error.message}`);
+      return [];
+    }
+  }
+  
+  /**
+   * Deletes a specific memory
+   * @param {string} agentId - Agent identifier
+   * @param {string} memoryId - Memory identifier
+   * @returns {boolean} Whether the deletion was successful
+   * @private
+   */
+  _deleteMemory(agentId, memoryId) {
+    try {
+      // Remove from cache
+      const cacheKey = `memory:${agentId}:${memoryId}`;
+      this.cache.del(cacheKey);
+      
+      // Remove from disk
+      const filePath = path.join(this.memoryDir, agentId, `${memoryId}.json`);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        logger.info(`${this.logPrefix} Deleted memory ${memoryId} for agent ${agentId}`);
+        return true;
+      } else {
+        logger.warn(`${this.logPrefix} Memory ${memoryId} not found for agent ${agentId}`);
+        return false;
+      }
+    } catch (error) {
+      logger.error(`${this.logPrefix} Failed to delete memory ${memoryId} for agent ${agentId}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Clears all memories for an agent
+   * @param {string} agentId - Agent identifier
+   * @returns {boolean} Whether the operation was successful
+   * @private
+   */
+  _clearAgentMemory(agentId) {
+    try {
+      const agentMemoryPath = path.join(this.memoryDir, agentId);
+      
+      // Clear cache keys for this agent
+      const keys = this.cache.keys();
+      const agentKeys = keys.filter(k => k.startsWith(`memory:${agentId}:`));
+      agentKeys.forEach(k => this.cache.del(k));
+      
+      // Clear files
+      if (fs.existsSync(agentMemoryPath)) {
+        fs.emptyDirSync(agentMemoryPath);
+      }
+      
+      logger.info(`${this.logPrefix} Cleared all memories for agent ${agentId}`);
+      return true;
+    } catch (error) {
+      logger.error(`${this.logPrefix} Failed to clear memories for agent ${agentId}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Updates the memory index for an agent
+   * @param {string} agentId - Agent identifier
+   * @param {Object} entry - Memory entry
+   * @private
+   */
+  _updateMemoryIndex(agentId, entry) {
+    try {
+      const indexPath = path.join(this.memoryDir, agentId, 'index.json');
+      let index = {};
+      
+      // Load existing index if it exists
+      if (fs.existsSync(indexPath)) {
+        index = fs.readJsonSync(indexPath);
+      }
+      
+      // Add entry to index
+      index[entry.id] = {
+        id: entry.id,
+        created: entry.created,
+        summary: entry.content.substring(0, 100)
+      };
+      
+      // Write updated index
+      fs.writeJsonSync(indexPath, index);
+    } catch (error) {
+      logger.error(`${this.logPrefix} Failed to update memory index for agent ${agentId}: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Logs an agent action
+   * @param {string} agentId - Agent identifier
+   * @param {string} action - Action performed
+   * @param {boolean} success - Whether the action was successful
+   * @returns {string} Memory ID
+   */
+  logAction(agentId, action, success = true) {
+    return this._addMemoryEntry(agentId, action, {
+      type: 'action',
+      success,
+      timestamp: new Date().toISOString()
+    });
+  }
+  
+  /**
+   * Logs a system event
+   * @param {string} event - Event type
+   * @param {string} description - Event description
+   * @returns {string} Memory ID
+   */
+  logSystemEvent(event, description) {
+    return this._addMemoryEntry('system', description, {
+      type: 'system_event',
+      event,
+      timestamp: new Date().toISOString()
+    });
+  }
+  
+  /**
+   * Saves shared knowledge between agents
+   * @param {string} key - Knowledge key
+   * @param {any} value - Knowledge value
+   * @param {Object} metadata - Additional metadata
+   * @returns {boolean} Whether the operation was successful
+   */
+  saveSharedKnowledge(key, value, metadata = {}) {
+    try {
+      const timestamp = new Date().toISOString();
+      
+      const entry = {
+        key,
+        value,
+        metadata: {
+          ...metadata,
+          timestamp,
+          type: 'shared_knowledge'
+        }
+      };
+      
+      // Store in shared knowledge area
+      const sharedPath = path.join(this.memoryDir, 'shared');
+      fs.ensureDirSync(sharedPath);
+      
+      const filePath = path.join(sharedPath, `${key}.json`);
+      fs.writeJsonSync(filePath, entry);
+      
+      // Also cache it
+      this.cache.set(`shared:${key}`, entry);
+      
+      logger.info(`${this.logPrefix} Saved shared knowledge: ${key}`);
+      return true;
+    } catch (error) {
+      logger.error(`${this.logPrefix} Failed to save shared knowledge ${key}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Retrieves shared knowledge
+   * @param {string} key - Knowledge key
+   * @returns {any} The stored knowledge value
+   */
+  getSharedKnowledge(key) {
+    try {
+      // Try cache first
+      const cached = this.cache.get(`shared:${key}`);
+      if (cached) {
+        return cached.value;
+      }
+      
+      // Try file system
+      const filePath = path.join(this.memoryDir, 'shared', `${key}.json`);
+      if (fs.existsSync(filePath)) {
+        const entry = fs.readJsonSync(filePath);
+        // Update cache
+        this.cache.set(`shared:${key}`, entry);
+        return entry.value;
+      }
+      
+      return null;
+    } catch (error) {
+      logger.error(`${this.logPrefix} Failed to get shared knowledge ${key}: ${error.message}`);
+      return null;
+    }
   }
   
   /**

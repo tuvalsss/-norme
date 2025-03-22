@@ -1,0 +1,22 @@
+{
+  "agentName": "qa_agent",
+  "createdAt": "2025-03-21T14:52:58.327Z",
+  "lastUpdated": "2025-03-21T14:52:58.327Z",
+  "sessions": {
+    "session_e4284b01-a327-440b-8c4d-a1475dd595f3": {
+      "startTime": "2025-03-21T14:52:58.327Z",
+      "endTime": null,
+      "actions": [],
+      "status": "active",
+      "summary": null
+    }
+  },
+  "stats": {
+    "totalSessions": 1,
+    "totalActions": 0,
+    "successCount": 0,
+    "failureCount": 0,
+    "lastSuccess": null,
+    "lastFailure": null
+  }
+}
