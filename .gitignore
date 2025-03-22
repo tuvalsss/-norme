@@ -1,5 +1,6 @@
 # הגדרות סביבה ומידע רגיש
 .env
+.env.example
 .env.local
 .env.*.local
 **/config/apiKeys.json
