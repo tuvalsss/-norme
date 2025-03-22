@@ -8,26 +8,29 @@ echo STARTING ENORME AI AGENT SYSTEM
 echo ==================================
 echo.
 
+REM Set the correct working directory - absolute path to botSys
+set "BOTSYS_PATH=C:\Users\tuval\botSys"
+
 REM Check if server.js file exists in ai-agent-system directory
-if not exist "ai-agent-system\server.js" (
+if not exist "%BOTSYS_PATH%\ai-agent-system\server.js" (
     echo ERROR: server.js not found in ai-agent-system directory!
     goto :ERROR
 )
 
 echo Starting Agent Server on port 5001...
-start "AI-AGENT SERVER" cmd /k "cd /d "%~dp0ai-agent-system" && node server.js"
+start "AI-AGENT SERVER" cmd /k "cd /d "%BOTSYS_PATH%\ai-agent-system" && node server.js"
 
 REM Wait 5 seconds to ensure the first server starts before the second
 timeout /t 5 /nobreak > nul
 
 REM Check if server.js file exists in ai-dashboard-fixed directory
-if not exist "ai-dashboard-fixed\server.js" (
+if not exist "%BOTSYS_PATH%\ai-dashboard-fixed\server.js" (
     echo ERROR: server.js not found in ai-dashboard-fixed directory!
     goto :ERROR
 )
 
 echo Starting Dashboard Server on port 3001...
-start "AI-DASHBOARD" cmd /k "cd /d "%~dp0ai-dashboard-fixed" && node server.js"
+start "AI-DASHBOARD" cmd /k "cd /d "%BOTSYS_PATH%\ai-dashboard-fixed" && node server.js"
 
 REM Wait 10 seconds before opening the browser
 timeout /t 10 /nobreak > nul

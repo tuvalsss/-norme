@@ -8,6 +8,9 @@ echo RESETTING AND STARTING AI AGENT SYSTEM
 echo ==================================
 echo.
 
+REM Set the correct working directory - absolute path to botSys
+set "BOTSYS_PATH=C:\Users\tuval\botSys"
+
 REM Kill any running processes
 echo Stopping any running processes...
 taskkill /F /FI "WINDOWTITLE eq AI-AGENT SERVER" > nul 2>&1
@@ -16,108 +19,90 @@ taskkill /F /FI "WINDOWTITLE eq AI-DASHBOARD" > nul 2>&1
 taskkill /F /FI "WINDOWTITLE eq AI Dashboard Server" > nul 2>&1
 timeout /t 2 /nobreak > nul
 
-REM Ensure we're in the correct directory
-cd /d "%~dp0"
+REM Change to the correct directory
+cd /d "%BOTSYS_PATH%"
 
 REM Create WORKSPACE directory if it doesn't exist
-if not exist "%~dp0ai-dashboard-fixed\WORKSPACE\" (
+if not exist "%BOTSYS_PATH%\ai-dashboard-fixed\WORKSPACE\" (
     echo Creating WORKSPACE directory...
-    mkdir "%~dp0ai-dashboard-fixed\WORKSPACE"
+    mkdir "%BOTSYS_PATH%\ai-dashboard-fixed\WORKSPACE"
 )
 
 REM Create demo project structure in agent system projects
-if not exist "%~dp0ai-agent-system\projects\123\" (
+if not exist "%BOTSYS_PATH%\ai-agent-system\projects\123\" (
     echo Creating demo project structure...
-    mkdir "%~dp0ai-agent-system\projects\123\src"
-    echo // Demo file > "%~dp0ai-agent-system\projects\123\src\demo.js"
+    mkdir "%BOTSYS_PATH%\ai-agent-system\projects\123\src"
+    echo // Demo file > "%BOTSYS_PATH%\ai-agent-system\projects\123\src\demo.js"
 )
 
-REM Fix workspace.json with proper content
-echo Fixing workspace.json...
-echo {"path": "./WORKSPACE"} > "%~dp0ai-dashboard-fixed\workspace.json"
+REM Create demo project structure in dashboard projects
+if not exist "%BOTSYS_PATH%\ai-dashboard-fixed\projects\123\" (
+    echo Creating dashboard demo project structure...
+    mkdir "%BOTSYS_PATH%\ai-dashboard-fixed\projects\123\src"
+    echo // Demo file > "%BOTSYS_PATH%\ai-dashboard-fixed\projects\123\src\demo.js"
+)
 
-REM Fix projects.json with a demo project
-echo Fixing projects.json...
-echo [{"id": "123", "name": "Initial Project", "description": "Project for system testing", "path": "123", "status": "active", "created": "2024-03-21T12:00:00.000Z", "updated": "2024-03-21T12:00:00.000Z", "agents": ["dev_agent", "qa_agent", "executor_agent", "summary_agent"]}] > "%~dp0ai-dashboard-fixed\projects.json"
+REM Create workspace.json if it doesn't exist
+if not exist "%BOTSYS_PATH%\ai-dashboard-fixed\workspace.json" (
+    echo Creating workspace.json...
+    echo {"workspaceId":"enorme_ai"} > "%BOTSYS_PATH%\ai-dashboard-fixed\workspace.json"
+)
+
+REM Create projects.json if it doesn't exist
+if not exist "%BOTSYS_PATH%\ai-dashboard-fixed\projects.json" (
+    echo Creating projects.json...
+    echo {"projects":[{"id":"123","name":"Demo Project","description":"A demo project for testing"}]} > "%BOTSYS_PATH%\ai-dashboard-fixed\projects.json"
+)
 
 REM Install required packages only if node_modules doesn't exist or is empty
-echo Checking AI-AGENT SERVER packages...
-if not exist "%~dp0ai-agent-system\node_modules\" (
-    echo Installing packages for AI-AGENT SERVER (this may take a few minutes)...
-    cd /d "%~dp0ai-agent-system" && npm install
-    cd /d "%~dp0"
-    if errorlevel 1 (
-        echo ERROR: Failed to install AI-AGENT SERVER packages!
-        goto :ERROR
-    )
+echo Checking node modules...
+
+if not exist "%BOTSYS_PATH%\ai-dashboard-fixed\node_modules\" (
+    echo Installing dashboard dependencies...
+    cd /d "%BOTSYS_PATH%\ai-dashboard-fixed"
+    call npm install --no-fund --no-audit
 ) else (
-    echo AI-AGENT SERVER packages already installed.
+    echo Dashboard dependencies already installed.
 )
 
-REM Check for dashboard packages
-echo Checking AI-DASHBOARD packages...
-if not exist "%~dp0ai-dashboard-fixed\node_modules\" (
-    echo Installing packages for AI-DASHBOARD (this may take a few minutes)...
-    cd /d "%~dp0ai-dashboard-fixed" && npm install
-    cd /d "%~dp0"
-    if errorlevel 1 (
-        echo ERROR: Failed to install AI-DASHBOARD packages!
-        goto :ERROR
-    )
+if not exist "%BOTSYS_PATH%\ai-agent-system\node_modules\" (
+    echo Installing agent system dependencies...
+    cd /d "%BOTSYS_PATH%\ai-agent-system"
+    call npm install --no-fund --no-audit
 ) else (
-    echo AI-DASHBOARD packages already installed.
+    echo Agent system dependencies already installed.
+)
+
+REM Reset log files
+echo Resetting log files...
+if exist "%BOTSYS_PATH%\ai-dashboard-fixed\logs\" (
+    del /F /Q "%BOTSYS_PATH%\ai-dashboard-fixed\logs\*.*"
+) else (
+    mkdir "%BOTSYS_PATH%\ai-dashboard-fixed\logs"
+)
+
+if exist "%BOTSYS_PATH%\ai-agent-system\logs\" (
+    del /F /Q "%BOTSYS_PATH%\ai-agent-system\logs\*.*"
+) else (
+    mkdir "%BOTSYS_PATH%\ai-agent-system\logs"
 )
 
 echo.
-echo Package installation and reset complete.
+echo ====================================
+echo System reset complete! Starting now...
+echo ====================================
 echo.
 
-REM Check if server.js file exists in ai-agent-system directory
-if not exist "%~dp0ai-agent-system\server.js" (
-    echo ERROR: server.js not found in ai-agent-system directory!
-    goto :ERROR
-)
+REM Start the system after reset
+cd /d "%BOTSYS_PATH%"
+call "%BOTSYS_PATH%\start_system.bat"
 
-echo Starting Agent Server on port 5001...
-REM Start with "cmd /k" instead of "cmd /c" so the window stays open
-start "AI-AGENT SERVER" cmd /k "cd /d "%~dp0ai-agent-system" && node server.js"
-
-REM Wait 5 seconds to ensure the first server starts before the second
-timeout /t 5 /nobreak > nul
-
-REM Check if server.js file exists in ai-dashboard-fixed directory
-if not exist "%~dp0ai-dashboard-fixed\server.js" (
-    echo ERROR: server.js not found in ai-dashboard-fixed directory!
-    goto :ERROR
-)
-
-echo Starting Dashboard Server on port 3001...
-REM Start with "cmd /k" instead of "cmd /c" so the window stays open
-start "AI-DASHBOARD" cmd /k "cd /d "%~dp0ai-dashboard-fixed" && node server.js"
-
-REM Wait 10 seconds before opening the browser - longer time for full initialization
-timeout /t 10 /nobreak > nul
-echo Opening Dashboard in browser...
-start http://localhost:3001
-
-echo.
-echo ==================================
-echo System reset and started successfully!
-echo ==================================
-echo.
-echo Agent server running on port 5001
-echo Management interface running on port 3001
-echo.
-echo To close the system, run stop_system.bat or close all CMD windows
-echo.
-echo Press any key to exit this window (servers will keep running)...
-pause > nul
-goto :EOF
+exit /b 0
 
 :ERROR
 echo.
 echo ==================================
-echo Failed to start the system!
+echo Failed to reset and start the system!
 echo ==================================
 echo Please check the error messages above.
 echo.
